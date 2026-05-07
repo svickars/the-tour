@@ -1,0 +1,167 @@
+.privacy-page {
+	display: flex;
+	flex-direction: column;
+	min-height: 100svh;
+	min-height: 100dvh;
+}
+
+.privacy-skip-link {
+	position: absolute;
+	left: -9999px;
+	top: auto;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+}
+
+.privacy-skip-link:focus {
+	position: fixed;
+	left: 0.75rem;
+	top: 0.75rem;
+	width: auto;
+	height: auto;
+	padding: 0.45rem 0.65rem;
+	z-index: 100;
+	background: var(--surface, #fafaf8);
+	border-radius: 8px;
+	box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+	font-size: 0.88rem;
+	font-weight: 500;
+	color: var(--text-strong, #18181b);
+}
+
+.privacy-page-top {
+	padding-right: 1.25rem;
+	padding-bottom: 1.25rem;
+	padding-left: 1.25rem;
+	padding-top: max(3.25rem, calc(env(safe-area-inset-top, 0px) + 2.25rem));
+	text-align: left;
+	box-sizing: border-box;
+	width: 100%;
+	max-width: 100%;
+}
+
+button.wordmark.wordmark--privacy {
+	appearance: none;
+	display: block;
+	width: fit-content;
+	margin: 0;
+	padding: 0;
+	border: none;
+	cursor: pointer;
+	text-align: left;
+	-webkit-tap-highlight-color: transparent;
+}
+
+button.wordmark.wordmark--privacy:focus-visible {
+	outline: 2px solid var(--focus, #18181b);
+	outline-offset: 4px;
+	border-radius: 4px;
+}
+
+button.wordmark.wordmark--privacy:hover {
+	opacity: 0.92;
+}
+
+.privacy-main {
+	flex: 1;
+	width: 100%;
+	max-width: 36rem;
+	margin: 0 auto;
+	padding: 0 1.25rem 2.5rem;
+	box-sizing: border-box;
+}
+
+.privacy-title {
+	margin: 0 0 0.75rem;
+	font-size: 1.65rem;
+	font-weight: 600;
+	letter-spacing: -0.03em;
+	color: var(--text-strong, #18181b);
+}
+
+.privacy-lead {
+	margin: 0 0 1.75rem;
+	font-size: 1rem;
+	line-height: 1.55;
+	color: var(--text, #52525b);
+}
+
+.privacy-section {
+	margin-bottom: 1.75rem;
+}
+
+.privacy-section h2 {
+	margin: 0 0 0.5rem;
+	font-size: 1.05rem;
+	font-weight: 600;
+	color: var(--text-strong, #18181b);
+}
+
+.privacy-section p,
+.privacy-section ul {
+	margin: 0;
+	font-size: 0.95rem;
+	line-height: 1.55;
+	color: var(--text, #52525b);
+}
+
+.privacy-section p + p {
+	margin-top: 0.65rem;
+}
+
+.privacy-section ul {
+	padding-left: 1.15rem;
+}
+
+.privacy-section li + li {
+	margin-top: 0.5rem;
+}
+
+.privacy-section a {
+	color: var(--text-strong, #18181b);
+	font-weight: 500;
+}
+
+.privacy-foot {
+	margin: 2rem 0 0;
+	font-size: 0.85rem;
+	color: var(--text-muted, #71717a);
+}
+
+.privacy-home-row {
+	margin: 1.25rem 0 0;
+}
+
+.privacy-home-btn {
+	padding: 0.5rem 1rem;
+	font: inherit;
+	font-size: 0.9rem;
+	font-weight: 500;
+	border-radius: 999px;
+	border: 1px solid rgba(0, 0, 0, 0.12);
+	background: var(--text-strong, #18181b);
+	color: #fafafa;
+	cursor: pointer;
+}
+
+.privacy-home-btn:hover {
+	filter: brightness(1.08);
+}
+
+.privacy-home-btn:focus-visible {
+	outline: 2px solid var(--text-strong, #18181b);
+	outline-offset: 2px;
+}
+
+.privacy-footer {
+	margin-top: auto;
+}
+
+.privacy-footer-link-btn {
+	border: none;
+	background: none;
+	padding: 0;
+	font: inherit;
+	cursor: pointer;
+}

@@ -1,4 +1,4 @@
-/* Tour player sheet (Sheet 3) — matches Passerby drawer: off-white, no gradients */
+/* Tour player sheet (Sheet 3) — matches Elsewhere drawer: off-white, no gradients */
 
 .tour-player-sheet {
   display: flex;
@@ -344,6 +344,12 @@
   min-height: 0;
   overflow-y: auto;
   padding: 0.15rem 0.25rem 0.65rem 0.35rem;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.tour-stops-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .tour-stops-status {
@@ -607,7 +613,7 @@
   position: absolute;
   right: 0;
   top: calc(100% + 0.25rem);
-  min-width: 11rem;
+  min-width: 16.25rem;
   padding: 0.3rem;
   border-radius: 12px;
   border: 1px solid var(--border, #e4e4e7);
@@ -760,11 +766,11 @@
   margin-top: 0.05rem;
 }
 
-.tour-stop-card-kebab.tour-stop-card-kebab--starred {
+.tour-stop-card-kebab.tour-stop-card-kebab--favourited {
   color: #e6b319;
 }
 
-.tour-stop-card-kebab.tour-stop-card-kebab--starred:hover {
+.tour-stop-card-kebab.tour-stop-card-kebab--favourited:hover {
   color: #f0c040;
 }
 

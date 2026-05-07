@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  Bookmark,
   Check,
   ChevronLeft,
   FastForward,
+  Heart,
   Loader2,
   MoreVertical,
   Pause,
@@ -12,6 +12,7 @@ import {
   Share2,
   SkipBack,
   SkipForward,
+  Trash2,
   X,
 } from 'lucide-react'
 import type { AlbumTrack, SelectedPlace } from '../lib/tourTypes'
@@ -66,9 +67,10 @@ export type TourPlayerSheetProps = {
   nextTrack: () => void | Promise<void>
   prevTrack: () => void | Promise<void>
   onShare: () => boolean | Promise<boolean>
-  onSave: () => void | Promise<void>
-  saveBusy?: boolean
-  isSavedOnDevice?: boolean
+  isFavourited: boolean
+  onFavouriteToggle: () => void | Promise<void>
+  /** True once this place+persona exists in local saved tours (after autosave). */
+  hasSavedRecord?: boolean
   onDeleteSavedTour?: () => void | Promise<void>
 }
 
@@ -95,9 +97,9 @@ export function TourPlayerSheet({
   nextTrack,
   prevTrack,
   onShare,
-  onSave,
-  saveBusy,
-  isSavedOnDevice = false,
+  isFavourited,
+  onFavouriteToggle,
+  hasSavedRecord = false,
   onDeleteSavedTour,
 }: TourPlayerSheetProps) {
   const [tab, setTab] = useState<TabId>('player')
@@ -143,10 +145,10 @@ export function TourPlayerSheet({
     setTourMenuOpen(false)
   }, [onShare])
 
-  const handleSaveFromMenu = useCallback(async () => {
-    await onSave()
+  const handleFavouriteFromMenu = useCallback(async () => {
+    await onFavouriteToggle()
     setTourMenuOpen(false)
-  }, [onSave])
+  }, [onFavouriteToggle])
 
   const handleDeleteFromMenu = useCallback(async () => {
     await onDeleteSavedTour?.()
@@ -197,21 +199,24 @@ export function TourPlayerSheet({
             </button>
             {tourMenuOpen ? (
               <div className="tour-player-popover" role="menu">
-                <button type="button" role="menuitem" className="tour-player-popover-item" onClick={() => void handleSaveFromMenu()} disabled={saveBusy || albumTracks.length === 0}>
-                  {saveBusy ? (
-                    <Loader2 className="tour-player-icon-spin" size={16} aria-hidden />
-                  ) : (
-                    <Bookmark size={16} strokeWidth={2} aria-hidden fill={isSavedOnDevice ? 'currentColor' : 'none'} />
-                  )}
-                  <span>{isSavedOnDevice ? 'Saved on this device' : 'Save to this device'}</span>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="tour-player-popover-item"
+                  onClick={() => void handleFavouriteFromMenu()}
+                  disabled={albumTracks.length === 0}
+                >
+                  <Heart size={16} strokeWidth={2} aria-hidden fill={isFavourited ? 'currentColor' : 'none'} />
+                  <span>{isFavourited ? 'Unfavourite' : 'Favourite'}</span>
                 </button>
                 <button type="button" role="menuitem" className="tour-player-popover-item" onClick={() => void handleShareClick()}>
                   {shareCopied ? <Check size={16} strokeWidth={2} aria-hidden /> : <Share2 size={16} strokeWidth={2} aria-hidden />}
                   <span>{shareCopied ? 'Link copied' : 'Share'}</span>
                 </button>
-                {isSavedOnDevice && onDeleteSavedTour ? (
+                {hasSavedRecord && onDeleteSavedTour ? (
                   <button type="button" role="menuitem" className="tour-player-popover-item tour-player-popover-item--danger" onClick={() => void handleDeleteFromMenu()}>
-                    <span>Delete saved tour</span>
+                    <Trash2 size={16} strokeWidth={2} aria-hidden />
+                    <span>Delete from this device</span>
                   </button>
                 ) : null}
               </div>

@@ -1,6 +1,6 @@
-const SCRIPT_ID = 'passerby-maps-bootstrap'
-/** Earlier builds used this id; remove so we can reload with `loading=async` + `callback`. */
-const LEGACY_SCRIPT_ID = 'passerby-google-maps-js'
+const SCRIPT_ID = 'elsewhere-maps-bootstrap'
+/** Earlier builds used these ids; remove so we can reload with `loading=async` + `callback`. */
+const LEGACY_SCRIPT_IDS = ['passerby-maps-bootstrap', 'passerby-google-maps-js'] as const
 
 let loadPromise: Promise<void> | null = null
 
@@ -45,9 +45,11 @@ export function loadGoogleMapsScript(apiKey: string): Promise<void> {
       return
     }
 
-    document.getElementById(LEGACY_SCRIPT_ID)?.remove()
+    for (const id of LEGACY_SCRIPT_IDS) {
+      document.getElementById(id)?.remove()
+    }
 
-    const callbackName = `__passerbyMapsCb_${Math.random().toString(36).slice(2, 11)}`
+    const callbackName = `__elsewhereMapsCb_${Math.random().toString(36).slice(2, 11)}`
     ;(window as unknown as Record<string, () => void>)[callbackName] = () => {
       delete (window as unknown as Record<string, unknown>)[callbackName]
       resolve()

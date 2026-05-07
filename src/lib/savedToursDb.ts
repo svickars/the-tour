@@ -2,6 +2,7 @@ import { PROMPT_VERSION } from './promptVersion'
 import type { AlbumTrack, SelectedPlace } from './tourTypes'
 import type { PersonaId } from './personas'
 
+/** IndexedDB database name (unchanged) so existing saved tours keep working across renames. */
 const DB_NAME = 'passerby-saved-tours'
 const DB_VERSION = 1
 const STORE = 'tours'
@@ -28,11 +29,30 @@ export type SavedTourRecord = {
   id: string
   createdAt: number
   updatedAt: number
-  starred: boolean
+  favourited: boolean
+  /** Optional user-facing title for lists and share links; does not change `place` or fingerprinting. */
+  savedLabel?: string
   promptVersion: string
   persona: PersonaId
   place: SelectedPlace
   tracks: SavedTourTrackRow[]
+}
+
+/** Legacy IndexedDB rows used `starred`; normalize on read. */
+function normalizeRecord(raw: object): SavedTourRecord {
+  const r = raw as SavedTourRecord & { starred?: boolean }
+  const sl = typeof r.savedLabel === 'string' ? r.savedLabel.trim() : ''
+  return {
+    id: r.id,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    favourited: Boolean(r.favourited ?? r.starred ?? false),
+    savedLabel: sl || undefined,
+    promptVersion: r.promptVersion,
+    persona: r.persona,
+    place: r.place,
+    tracks: r.tracks,
+  }
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -49,110 +69,10 @@ function openDb(): Promise<IDBDatabase> {
   })
 }
 
-/** Remove tours not updated in 30 days (full record including audio). */
-export async function pruneExpiredSavedTours(): Promise<number> {
-  const db = await openDb()
-  const now = Date.now()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    const st = tx.objectStore(STORE)
-    let removed = 0
-    tx.oncomplete = () => resolve(removed)
-    tx.onerror = () => reject(tx.error ?? new Error('prune failed'))
-    const req = st.getAll()
-    req.onerror = () => reject(req.error ?? new Error('prune read failed'))
-    req.onsuccess = () => {
-      const all = (req.result as SavedTourRecord[]) ?? []
-      const stale = all.filter((r) => now - r.updatedAt > THIRTY_DAYS_MS)
-      removed = stale.length
-      for (const r of stale) {
-        st.delete(r.id)
-      }
-    }
-  })
-}
-
-export async function listSavedTours(): Promise<SavedTourRecord[]> {
-  await pruneExpiredSavedTours()
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readonly')
-    const st = tx.objectStore(STORE)
-    const req = st.getAll()
-    req.onerror = () => reject(req.error ?? new Error('list failed'))
-    req.onsuccess = () => {
-      const rows = (req.result as SavedTourRecord[]) ?? []
-      rows.sort((a, b) => {
-        if (a.starred !== b.starred) return a.starred ? -1 : 1
-        return b.updatedAt - a.updatedAt
-      })
-      resolve(rows)
-    }
-  })
-}
-
-export async function putSavedTour(record: SavedTourRecord): Promise<void> {
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error ?? new Error('put failed'))
-    tx.objectStore(STORE).put(record)
-  })
-}
-
-export async function deleteSavedTour(id: string): Promise<void> {
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error ?? new Error('delete failed'))
-    tx.objectStore(STORE).delete(id)
-  })
-}
-
-export async function updateSavedTourStar(id: string, starred: boolean): Promise<void> {
-  const db = await openDb()
-  const row = await new Promise<SavedTourRecord | undefined>((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readonly')
-    const g = tx.objectStore(STORE).get(id)
-    g.onerror = () => reject(g.error ?? new Error('get failed'))
-    g.onsuccess = () => resolve(g.result as SavedTourRecord | undefined)
-  })
-  if (!row) throw new Error('not found')
-  row.starred = starred
-  row.updatedAt = Date.now()
-  await putSavedTour(row)
-}
-
-export function placeFingerprint(place: SelectedPlace, persona: PersonaId): string {
-  if (place.placeId?.trim()) {
-    return `pid:${place.placeId.trim()}|p:${persona}`
-  }
-  const label = place.label.trim().toLowerCase().replace(/\s+/g, ' ')
-  return `ll:${place.lat.toFixed(5)},${place.lng.toFixed(5)}|${label}|p:${persona}`
-}
-
-export async function findSavedTourByFingerprint(
-  place: SelectedPlace,
-  persona: PersonaId,
-): Promise<SavedTourRecord | null> {
-  const fp = placeFingerprint(place, persona)
-  const all = await listSavedTours()
-  for (const r of all) {
-    if (placeFingerprint(r.place, r.persona) === fp) return r
-  }
-  return null
-}
-
-export async function saveTourFromAlbum(input: {
-  place: SelectedPlace
-  persona: PersonaId
-  tracks: AlbumTrack[]
-}): Promise<SavedTourRecord> {
+async function buildTrackRows(tracks: AlbumTrack[]): Promise<SavedTourTrackRow[]> {
   const rows: SavedTourTrackRow[] = []
-  for (let i = 0; i < input.tracks.length; i++) {
-    const t = input.tracks[i]!
+  for (let i = 0; i < tracks.length; i++) {
+    const t = tracks[i]!
     let audioBytes: ArrayBuffer
     let audioMime = 'audio/mpeg'
     if (t.audioObjectUrl) {
@@ -178,16 +98,188 @@ export async function saveTourFromAlbum(input: {
       rating: t.rating,
     })
   }
+  return rows
+}
+
+function stripLegacyStarredForPut(record: SavedTourRecord): SavedTourRecord {
+  const out = { ...record } as SavedTourRecord & { starred?: boolean }
+  delete out.starred
+  return out
+}
+
+/** Remove tours not updated in 30 days (full record including audio). */
+export async function pruneExpiredSavedTours(): Promise<number> {
+  const db = await openDb()
+  const now = Date.now()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    const st = tx.objectStore(STORE)
+    let removed = 0
+    tx.oncomplete = () => resolve(removed)
+    tx.onerror = () => reject(tx.error ?? new Error('prune failed'))
+    const req = st.getAll()
+    req.onerror = () => reject(req.error ?? new Error('prune read failed'))
+    req.onsuccess = () => {
+      const all = (req.result as object[]) ?? []
+      const stale = all.filter((raw) => {
+        const r = normalizeRecord(raw)
+        return now - r.updatedAt > THIRTY_DAYS_MS
+      })
+      removed = stale.length
+      for (const raw of stale) {
+        const r = normalizeRecord(raw)
+        st.delete(r.id)
+      }
+    }
+  })
+}
+
+export async function listSavedTours(): Promise<SavedTourRecord[]> {
+  await pruneExpiredSavedTours()
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly')
+    const st = tx.objectStore(STORE)
+    const req = st.getAll()
+    req.onerror = () => reject(req.error ?? new Error('list failed'))
+    req.onsuccess = () => {
+      const raw = (req.result as object[]) ?? []
+      const rows = raw.map((o) => normalizeRecord(o))
+      rows.sort((a, b) => b.updatedAt - a.updatedAt)
+      resolve(rows)
+    }
+  })
+}
+
+export async function putSavedTour(record: SavedTourRecord): Promise<void> {
+  const db = await openDb()
+  const clean = stripLegacyStarredForPut(record)
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error ?? new Error('put failed'))
+    tx.objectStore(STORE).put(clean)
+  })
+}
+
+export async function deleteSavedTour(id: string): Promise<void> {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error ?? new Error('delete failed'))
+    tx.objectStore(STORE).delete(id)
+  })
+}
+
+export async function updateSavedTourFavourite(id: string, favourited: boolean): Promise<void> {
+  const db = await openDb()
+  const row = await new Promise<SavedTourRecord | undefined>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly')
+    const g = tx.objectStore(STORE).get(id)
+    g.onerror = () => reject(g.error ?? new Error('get failed'))
+    g.onsuccess = () => resolve(g.result ? normalizeRecord(g.result as object) : undefined)
+  })
+  if (!row) throw new Error('not found')
+  row.favourited = favourited
+  row.updatedAt = Date.now()
+  await putSavedTour(row)
+}
+
+/** Label for share URLs and home lists — user rename when set, otherwise the place label. */
+export function shareLabelForSavedTour(row: SavedTourRecord): string {
+  const custom = row.savedLabel?.trim()
+  return custom || row.place.label
+}
+
+export async function updateSavedTourSavedLabel(id: string, savedLabel: string | undefined): Promise<void> {
+  const db = await openDb()
+  const row = await new Promise<SavedTourRecord | undefined>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly')
+    const g = tx.objectStore(STORE).get(id)
+    g.onerror = () => reject(g.error ?? new Error('get failed'))
+    g.onsuccess = () => resolve(g.result ? normalizeRecord(g.result as object) : undefined)
+  })
+  if (!row) throw new Error('not found')
+  const trimmed = savedLabel?.trim()
+  const next = { ...row, updatedAt: Date.now() } as SavedTourRecord
+  if (trimmed) next.savedLabel = trimmed
+  else delete next.savedLabel
+  await putSavedTour(next)
+}
+
+export async function deleteAllNonFavouritedTours(): Promise<number> {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    const st = tx.objectStore(STORE)
+    let removed = 0
+    tx.oncomplete = () => resolve(removed)
+    tx.onerror = () => reject(tx.error ?? new Error('delete all failed'))
+    const req = st.getAll()
+    req.onerror = () => reject(req.error ?? new Error('get failed'))
+    req.onsuccess = () => {
+      const raw = (req.result as object[]) ?? []
+      for (const o of raw) {
+        const r = normalizeRecord(o)
+        if (!r.favourited) {
+          st.delete(r.id)
+          removed += 1
+        }
+      }
+    }
+  })
+}
+
+export function placeFingerprint(place: SelectedPlace, persona: PersonaId): string {
+  if (place.placeId?.trim()) {
+    return `pid:${place.placeId.trim()}|p:${persona}`
+  }
+  const label = place.label.trim().toLowerCase().replace(/\s+/g, ' ')
+  return `ll:${place.lat.toFixed(5)},${place.lng.toFixed(5)}|${label}|p:${persona}`
+}
+
+export async function findSavedTourByFingerprint(
+  place: SelectedPlace,
+  persona: PersonaId,
+): Promise<SavedTourRecord | null> {
+  const fp = placeFingerprint(place, persona)
+  const all = await listSavedTours()
+  for (const r of all) {
+    if (placeFingerprint(r.place, r.persona) === fp) return r
+  }
+  return null
+}
+
+/** Create or update the saved tour for this place+persona; preserves `favourited` on update. */
+export async function upsertTourFromAlbum(input: {
+  place: SelectedPlace
+  persona: PersonaId
+  tracks: AlbumTrack[]
+}): Promise<SavedTourRecord> {
+  const rows = await buildTrackRows(input.tracks)
+  const existing = await findSavedTourByFingerprint(input.place, input.persona)
+  const now = Date.now()
+  if (existing) {
+    const next: SavedTourRecord = {
+      ...existing,
+      updatedAt: now,
+      promptVersion: PROMPT_VERSION,
+      place: input.place,
+      tracks: rows,
+    }
+    await putSavedTour(next)
+    return next
+  }
   const id =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
       : `t-${Date.now()}-${Math.random().toString(16).slice(2)}`
-  const now = Date.now()
   const record: SavedTourRecord = {
     id,
     createdAt: now,
     updatedAt: now,
-    starred: false,
+    favourited: false,
     promptVersion: PROMPT_VERSION,
     persona: input.persona,
     place: input.place,
@@ -196,6 +288,9 @@ export async function saveTourFromAlbum(input: {
   await putSavedTour(record)
   return record
 }
+
+/** @deprecated Use upsertTourFromAlbum */
+export const saveTourFromAlbum = upsertTourFromAlbum
 
 export function albumTracksFromSaved(record: SavedTourRecord): AlbumTrack[] {
   return record.tracks.map((row) => {

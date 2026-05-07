@@ -26,6 +26,8 @@ type UseOnboardingFlowArgs = {
   cancelTourPrep: () => void
   /** Clears place/persona UI state; called after internal flow reset. */
   onRestartApp?: () => void
+  /** Called when backing from tour to narrator, before `stopTour` (album still in memory). */
+  beforeLeaveTour?: () => void | Promise<void>
 }
 
 export function useOnboardingFlow({
@@ -37,6 +39,7 @@ export function useOnboardingFlow({
   stopTour,
   cancelTourPrep,
   onRestartApp,
+  beforeLeaveTour,
 }: UseOnboardingFlowArgs) {
   const [step, setStep] = useState<OnboardingStep>('place')
   const [prefetchTimedOut, setPrefetchTimedOut] = useState(false)
@@ -97,6 +100,7 @@ export function useOnboardingFlow({
     }
 
     if (step === 'tour') {
+      void beforeLeaveTour?.()
       stopTour()
       bridge2Started.current = false
       syncKey()
@@ -119,7 +123,7 @@ export function useOnboardingFlow({
       bridge2Started.current = false
       setStep('persona')
     }
-  }, [step, stopTour, cancelTourPrep, selectedPlace])
+  }, [step, stopTour, cancelTourPrep, selectedPlace, beforeLeaveTour])
 
   const advanceToPersonaBridge = useCallback(() => {
     setStep('bridge_persona')

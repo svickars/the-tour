@@ -1,6 +1,27 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
-import { Check, ChevronLeft, Dices, Loader2, MapPin, MoreVertical, RotateCcw, Share2, Shuffle, Star } from 'lucide-react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
+import {
+  Check,
+  ChevronLeft,
+  Dices,
+  Heart,
+  Loader2,
+  MapPin,
+  MoreVertical,
+  Pencil,
+  RotateCcw,
+  Share2,
+  Shuffle,
+  Trash2,
+} from 'lucide-react'
 import { GenerationStatusTheater } from './components/GenerationStatusTheater'
 import { PlacesSearch } from './components/PlacesSearch'
 import { TourPlayerSheet } from './components/TourPlayerSheet'
@@ -19,13 +40,18 @@ import {
   useTourEngine,
 } from './hooks/useTourEngine'
 import { type PersonaId, PERSONAS } from './lib/personas'
+import { useNav } from './NavContext'
 import {
   albumTracksFromSaved,
+  deleteAllNonFavouritedTours,
   deleteSavedTour,
+  findSavedTourByFingerprint,
   listSavedTours,
   placeFingerprint,
-  saveTourFromAlbum,
-  updateSavedTourStar,
+  shareLabelForSavedTour,
+  updateSavedTourFavourite,
+  updateSavedTourSavedLabel,
+  upsertTourFromAlbum,
   type SavedTourRecord,
 } from './lib/savedToursDb'
 import { buildTourShareUrl, parseTourSearchParams, tourParamsToSelectedPlace, type TourUrlParams } from './lib/deepLink'
@@ -174,14 +200,17 @@ function OnboardingDrawer({
 }
 
 export default function App() {
+  const nav = useNav()
   const [selectedPlace, setSelectedPlace] = useState<SelectedPlace | null>(null)
   const [shuffleSeed, setShuffleSeed] = useState(() => Math.floor(Math.random() * 1e9))
   const [persona, setPersona] = useState<PersonaId>('deadpan')
 
   const [savedList, setSavedList] = useState<SavedTourRecord[]>([])
-  const [saveBusy, setSaveBusy] = useState(false)
   const [savedMenuId, setSavedMenuId] = useState<string | null>(null)
   const [savedShareOkId, setSavedShareOkId] = useState<string | null>(null)
+  const [renameModal, setRenameModal] = useState<{ id: string; draft: string } | null>(null)
+  const renameInputRef = useRef<HTMLInputElement>(null)
+  const renameTitleId = useId()
 
   const refreshSaved = useCallback(async () => {
     try {
@@ -190,6 +219,15 @@ export default function App() {
       setSavedList([])
     }
   }, [])
+
+  const favouriteList = useMemo(
+    () => savedList.filter((r) => r.favourited),
+    [savedList],
+  )
+  const historyList = useMemo(
+    () => savedList.filter((r) => !r.favourited),
+    [savedList],
+  )
 
   const handleRestartApp = useCallback(() => {
     setSelectedPlace(null)
@@ -226,6 +264,16 @@ export default function App() {
     restoreAlbumFromTracks,
   } = useTourEngine(selectedPlace, persona)
 
+  const flushAutosaveTour = useCallback(async () => {
+    if (!selectedPlace || albumTracks.length === 0) return
+    try {
+      await upsertTourFromAlbum({ place: selectedPlace, persona, tracks: albumTracks })
+      await refreshSaved()
+    } catch {
+      /* ignore persist errors */
+    }
+  }, [selectedPlace, persona, albumTracks, refreshSaved])
+
   const { step, prefetchTimedOut, goBack, restart, advanceToPersonaBridge, overlayCoversPlace, enterTourFromLibrary, dismissTourSheet } =
     useOnboardingFlow({
       selectedPlace,
@@ -236,7 +284,13 @@ export default function App() {
       stopTour,
       cancelTourPrep,
       onRestartApp: handleRestartApp,
+      beforeLeaveTour: flushAutosaveTour,
     })
+
+  const handleDismissTour = useCallback(async () => {
+    await flushAutosaveTour()
+    dismissTourSheet()
+  }, [flushAutosaveTour, dismissTourSheet])
 
   const geo = useGeolocationOnDemand()
 
@@ -296,10 +350,13 @@ export default function App() {
 
   const handleShareTour = useCallback(async (): Promise<boolean> => {
     if (!selectedPlace) return false
+    const fp = placeFingerprint(selectedPlace, persona)
+    const hit = savedList.find((r) => placeFingerprint(r.place, r.persona) === fp)
+    const label = hit ? shareLabelForSavedTour(hit) : selectedPlace.label
     const url = buildTourShareUrl({
       lat: selectedPlace.lat,
       lng: selectedPlace.lng,
-      label: selectedPlace.label,
+      label,
       persona,
       placeId: selectedPlace.placeId,
     })
@@ -309,13 +366,13 @@ export default function App() {
     } catch {
       return false
     }
-  }, [selectedPlace, persona])
+  }, [selectedPlace, persona, savedList])
 
   const handleShareTourForSaved = useCallback(async (row: SavedTourRecord): Promise<boolean> => {
     const url = buildTourShareUrl({
       lat: row.place.lat,
       lng: row.place.lng,
-      label: row.place.label,
+      label: shareLabelForSavedTour(row),
       persona: row.persona,
       placeId: row.place.placeId,
     })
@@ -327,22 +384,86 @@ export default function App() {
     }
   }, [])
 
-  const handleSaveTour = useCallback(async () => {
-    if (!selectedPlace || albumTracks.length === 0) return
-    setSaveBusy(true)
+  const openRenameSaved = useCallback((row: SavedTourRecord) => {
+    setSavedMenuId(null)
+    setRenameModal({ id: row.id, draft: shareLabelForSavedTour(row) })
+  }, [])
+
+  const closeRenameSaved = useCallback(() => {
+    setRenameModal(null)
+  }, [])
+
+  const confirmRenameSaved = useCallback(async () => {
+    if (!renameModal) return
+    const t = renameModal.draft.trim()
     try {
-      await saveTourFromAlbum({ place: selectedPlace, persona, tracks: albumTracks })
+      await updateSavedTourSavedLabel(renameModal.id, t || undefined)
       await refreshSaved()
-    } finally {
-      setSaveBusy(false)
+      setRenameModal(null)
+    } catch {
+      /* ignore */
+    }
+  }, [renameModal, refreshSaved])
+
+  useLayoutEffect(() => {
+    if (!renameModal) return
+    const el = renameInputRef.current
+    if (!el) return
+    el.focus({ preventScroll: true })
+  }, [renameModal])
+
+  useEffect(() => {
+    if (!renameModal) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeRenameSaved()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [renameModal, closeRenameSaved])
+
+  const handleFavouriteToggleFromSheet = useCallback(async () => {
+    if (!selectedPlace || albumTracks.length === 0) return
+    const prior = await findSavedTourByFingerprint(selectedPlace, persona)
+    const nextFav = !prior?.favourited
+    try {
+      await upsertTourFromAlbum({ place: selectedPlace, persona, tracks: albumTracks })
+      const row = await findSavedTourByFingerprint(selectedPlace, persona)
+      if (row) await updateSavedTourFavourite(row.id, nextFav)
+      await refreshSaved()
+    } catch {
+      /* ignore */
     }
   }, [selectedPlace, persona, albumTracks, refreshSaved])
 
-  const isTourSavedOnDevice = useMemo(() => {
+  const isTourFavourited = useMemo(() => {
+    if (!selectedPlace) return false
+    const fp = placeFingerprint(selectedPlace, persona)
+    const hit = savedList.find((r) => placeFingerprint(r.place, r.persona) === fp)
+    return Boolean(hit?.favourited)
+  }, [selectedPlace, persona, savedList])
+
+  const hasSavedRecordForTour = useMemo(() => {
     if (!selectedPlace) return false
     const fp = placeFingerprint(selectedPlace, persona)
     return savedList.some((r) => placeFingerprint(r.place, r.persona) === fp)
   }, [selectedPlace, persona, savedList])
+
+  const handleDeleteAllHistory = useCallback(async () => {
+    const count = savedList.filter((r) => !r.favourited).length
+    if (count === 0) return
+    if (
+      !window.confirm(
+        `Remove all ${count} saved tour${count === 1 ? '' : 's'} from this device? Favourites will stay.`,
+      )
+    ) {
+      return
+    }
+    await deleteAllNonFavouritedTours()
+    await refreshSaved()
+  }, [savedList, refreshSaved])
 
   const handleDeleteCurrentSavedTour = useCallback(async () => {
     if (!selectedPlace) return
@@ -369,6 +490,15 @@ export default function App() {
     const t = window.setTimeout(() => setSavedShareOkId(null), 2400)
     return () => window.clearTimeout(t)
   }, [savedShareOkId])
+
+  useEffect(() => {
+    if (step !== 'tour' || !selectedPlace || albumTracks.length === 0) return
+    if (!albumTracks[0]?.scriptText?.trim()) return
+    const id = window.setTimeout(() => {
+      void flushAutosaveTour()
+    }, 3000)
+    return () => window.clearTimeout(id)
+  }, [step, selectedPlace, albumTracks, flushAutosaveTour])
 
   const shuffle = useCallback(() => {
     setShuffleSeed(Math.floor(Math.random() * 1e9))
@@ -415,7 +545,7 @@ export default function App() {
           aria-hidden={overlayCoversPlace}
         >
           <header className="passerby-header">
-            <p className="wordmark">passerby</p>
+            <p className="wordmark">elsewhere</p>
           </header>
 
           <section className="stack-section stack-section--location" aria-label="Location">
@@ -489,17 +619,17 @@ export default function App() {
             </div>
           </section>
 
-          {savedList.length > 0 ? (
-            <section className="stack-section stack-section--saved" aria-labelledby="saved-heading">
-              <h2 id="saved-heading" className="section-label">
-                Take me back…
+          {favouriteList.length > 0 ? (
+            <section className="stack-section stack-section--saved" aria-labelledby="favourites-heading">
+              <h2 id="favourites-heading" className="section-label">
+                Favourites
               </h2>
               <ul className="tour-stops-list tour-stops-list--timeline tour-stops-list--saved-home">
-                {savedList.map((row, si) => {
+                {favouriteList.map((row, si) => {
                   const nar = PERSONAS.find((p) => p.id === row.persona)?.label ?? row.persona
                   const menuOpen = savedMenuId === row.id
                   const nTracks = row.tracks.length
-                  const placeTitle = shortenSavedPlaceTitle(row.place.label)
+                  const placeTitle = shortenSavedPlaceTitle(shareLabelForSavedTour(row))
                   const openTour = () => {
                     setSavedMenuId(null)
                     setSelectedPlace(row.place)
@@ -533,7 +663,7 @@ export default function App() {
                         <div className="tour-stop-card-menu">
                           <button
                             type="button"
-                            className={`drawer-round-btn tour-stop-card-kebab${row.starred ? ' tour-stop-card-kebab--starred' : ''}`}
+                            className="drawer-round-btn tour-stop-card-kebab tour-stop-card-kebab--favourited"
                             aria-label="Saved tour actions"
                             aria-expanded={menuOpen}
                             onClick={(e) => {
@@ -541,11 +671,7 @@ export default function App() {
                               setSavedMenuId(menuOpen ? null : row.id)
                             }}
                           >
-                            {row.starred ? (
-                              <Star size={18} strokeWidth={2} fill="currentColor" aria-hidden />
-                            ) : (
-                              <MoreVertical size={18} strokeWidth={2} aria-hidden />
-                            )}
+                            <Heart size={18} strokeWidth={2} fill="currentColor" aria-hidden />
                           </button>
                           {menuOpen ? (
                             <div className="tour-player-popover tour-player-popover--anchored" role="menu">
@@ -555,12 +681,21 @@ export default function App() {
                                 className="tour-player-popover-item"
                                 onClick={async () => {
                                   setSavedMenuId(null)
-                                  await updateSavedTourStar(row.id, !row.starred)
+                                  await updateSavedTourFavourite(row.id, false)
                                   await refreshSaved()
                                 }}
                               >
-                                <Star size={16} strokeWidth={2} aria-hidden />
-                                <span>{row.starred ? 'Unstar' : 'Star'}</span>
+                                <Heart size={16} strokeWidth={2} aria-hidden />
+                                <span>Unfavourite</span>
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="tour-player-popover-item"
+                                onClick={() => openRenameSaved(row)}
+                              >
+                                <Pencil size={16} strokeWidth={2} aria-hidden />
+                                <span>Rename</span>
                               </button>
                               <button
                                 type="button"
@@ -588,6 +723,136 @@ export default function App() {
                                   await refreshSaved()
                                 }}
                               >
+                                <Trash2 size={16} strokeWidth={2} aria-hidden />
+                                <span>Delete</span>
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            </section>
+          ) : null}
+
+          {historyList.length > 0 ? (
+            <section className="stack-section stack-section--saved" aria-labelledby="saved-heading">
+              <div className="section-head section-head--saved-history">
+                <h2 id="saved-heading" className="section-label">
+                  Take me back…
+                </h2>
+                <div className="section-head-actions">
+                  <button
+                    type="button"
+                    className="saved-delete-all-btn"
+                    onClick={() => void handleDeleteAllHistory()}
+                  >
+                    Delete all
+                  </button>
+                </div>
+              </div>
+              <ul className="tour-stops-list tour-stops-list--timeline tour-stops-list--saved-home">
+                {historyList.map((row, si) => {
+                  const nar = PERSONAS.find((p) => p.id === row.persona)?.label ?? row.persona
+                  const menuOpen = savedMenuId === row.id
+                  const nTracks = row.tracks.length
+                  const placeTitle = shortenSavedPlaceTitle(shareLabelForSavedTour(row))
+                  const openTour = () => {
+                    setSavedMenuId(null)
+                    setSelectedPlace(row.place)
+                    setPersona(row.persona)
+                    restoreAlbumFromTracks(albumTracksFromSaved(row))
+                    enterTourFromLibrary()
+                  }
+                  return (
+                    <li key={row.id} className="tour-stop-row">
+                      <button type="button" className="tour-stop-dot-btn" aria-label="Open saved tour" onClick={openTour}>
+                        <span className="tour-stop-dot-inner">{si + 1}</span>
+                      </button>
+                      <div className="tour-stop-card tour-stop-card--saved-home" data-saved-card={row.id}>
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          className="tour-stop-card-body tour-stop-card-body--grow"
+                          onClick={openTour}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              openTour()
+                            }
+                          }}
+                        >
+                          <h3 className="tour-stop-name">{placeTitle}</h3>
+                          <p className="tour-stop-card-saved-meta">
+                            {nTracks} {nTracks === 1 ? 'track' : 'tracks'} · Narrated by {nar}
+                          </p>
+                        </div>
+                        <div className="tour-stop-card-menu">
+                          <button
+                            type="button"
+                            className="drawer-round-btn tour-stop-card-kebab"
+                            aria-label="Saved tour actions"
+                            aria-expanded={menuOpen}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setSavedMenuId(menuOpen ? null : row.id)
+                            }}
+                          >
+                            <MoreVertical size={18} strokeWidth={2} aria-hidden />
+                          </button>
+                          {menuOpen ? (
+                            <div className="tour-player-popover tour-player-popover--anchored" role="menu">
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="tour-player-popover-item"
+                                onClick={async () => {
+                                  setSavedMenuId(null)
+                                  await updateSavedTourFavourite(row.id, true)
+                                  await refreshSaved()
+                                }}
+                              >
+                                <Heart size={16} strokeWidth={2} aria-hidden />
+                                <span>Favourite</span>
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="tour-player-popover-item"
+                                onClick={() => openRenameSaved(row)}
+                              >
+                                <Pencil size={16} strokeWidth={2} aria-hidden />
+                                <span>Rename</span>
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="tour-player-popover-item"
+                                onClick={async () => {
+                                  const ok = await handleShareTourForSaved(row)
+                                  if (ok) setSavedShareOkId(row.id)
+                                }}
+                              >
+                                {savedShareOkId === row.id ? (
+                                  <Check size={16} strokeWidth={2} aria-hidden />
+                                ) : (
+                                  <Share2 size={16} strokeWidth={2} aria-hidden />
+                                )}
+                                <span>{savedShareOkId === row.id ? 'Link copied' : 'Share'}</span>
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="tour-player-popover-item tour-player-popover-item--danger"
+                                onClick={async () => {
+                                  setSavedMenuId(null)
+                                  await deleteSavedTour(row.id)
+                                  await refreshSaved()
+                                }}
+                              >
+                                <Trash2 size={16} strokeWidth={2} aria-hidden />
                                 <span>Delete</span>
                               </button>
                             </div>
@@ -613,7 +878,17 @@ export default function App() {
             >
               DF Labs
             </a>
-            .
+            {' · '}
+            <a
+              href="/privacy"
+              className="passerby-footer-link"
+              onClick={(e) => {
+                e.preventDefault()
+                nav.go('/privacy')
+              }}
+            >
+              Privacy
+            </a>
           </p>
         </footer>
 
@@ -730,7 +1005,7 @@ export default function App() {
               secondariesRequestLoading={secondariesRequestLoading}
               currentTrackIndex={currentTrackIndex}
               onBack={goBack}
-              onDismissTour={dismissTourSheet}
+              onDismissTour={handleDismissTour}
               togglePlayPause={togglePlayPause}
               seekBy={seekBy}
               seekTo={seekTo}
@@ -738,14 +1013,63 @@ export default function App() {
               nextTrack={nextTrack}
               prevTrack={prevTrack}
               onShare={handleShareTour}
-              onSave={handleSaveTour}
-              saveBusy={saveBusy}
-              isSavedOnDevice={isTourSavedOnDevice}
+              isFavourited={isTourFavourited}
+              onFavouriteToggle={() => void handleFavouriteToggleFromSheet()}
+              hasSavedRecord={hasSavedRecordForTour}
               onDeleteSavedTour={handleDeleteCurrentSavedTour}
             />
           </div>
         )}
       </main>
+
+      {renameModal ? (
+        <div
+          className="rename-place-backdrop"
+          role="presentation"
+          onPointerDown={(e) => {
+            if (e.target === e.currentTarget) closeRenameSaved()
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={renameTitleId}
+            className="rename-place-dialog"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <h2 id={renameTitleId} className="rename-place-title">
+              Name this place
+            </h2>
+            <form
+              className="rename-place-form"
+              onSubmit={(e) => {
+                e.preventDefault()
+                void confirmRenameSaved()
+              }}
+            >
+              <input
+                ref={renameInputRef}
+                type="text"
+                className="rename-place-input"
+                value={renameModal.draft}
+                onChange={(e) =>
+                  setRenameModal((m) => (m ? { ...m, draft: e.target.value } : m))
+                }
+                autoComplete="off"
+                aria-label="Place name"
+              />
+              <div className="rename-place-actions">
+                <button type="button" className="rename-place-btn rename-place-btn--ghost" onClick={closeRenameSaved}>
+                  Cancel
+                </button>
+                <button type="submit" className="rename-place-btn rename-place-btn--primary">
+                  Save
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
