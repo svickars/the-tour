@@ -380,9 +380,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
         if (isAutoplayPolicyBlock(e)) {
           releaseAudioResources()
           setAudioPhase('idle')
-          setAudioError(
-            'This browser only allows audio right after you tap. Tap play to start.',
-          )
+          setAudioError(null)
           return false
         }
         setAudioError('Could not play audio in this browser.')
@@ -501,12 +499,10 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
           try {
             await audio.play()
           } catch (e) {
-            if (isAutoplayPolicyBlock(e)) {
-              setAudioError(
-                'This browser only allows audio right after you tap. Tap play to start.',
-              )
-            } else {
+            if (!isAutoplayPolicyBlock(e)) {
               setAudioError('Could not play audio in this browser.')
+            } else {
+              setAudioError(null)
             }
             releaseAudioResources()
             setAudioPhase('idle')

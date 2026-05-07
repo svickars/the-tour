@@ -275,13 +275,24 @@ export default function App() {
     }
   }, [selectedPlace, persona, albumTracks, refreshSaved])
 
+  const bridgeTourContentReady = useMemo(() => {
+    const main = albumTracks[0]
+    if (!main?.scriptText?.trim()) return false
+    if (scriptBusy) return false
+    return (
+      audioPhase === 'playing' ||
+      audioPhase === 'loading' ||
+      Boolean(main.hasStartedPlayback) ||
+      (audioPhase === 'idle' && Boolean(main.audioObjectUrl))
+    )
+  }, [albumTracks, scriptBusy, audioPhase])
+
   const { step, prefetchTimedOut, goBack, restart, advanceToPersonaBridge, overlayCoversPlace, enterTourFromLibrary, dismissTourSheet } =
     useOnboardingFlow({
       selectedPlace,
       prefetchLoading,
       canGenerate,
-      audioPhase,
-      mainTourPlaybackStarted: Boolean(albumTracks[0]?.hasStartedPlayback),
+      bridgeTourContentReady,
       stopTour,
       cancelTourPrep,
       onRestartApp: handleRestartApp,

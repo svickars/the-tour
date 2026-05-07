@@ -19,9 +19,8 @@ type UseOnboardingFlowArgs = {
   selectedPlace: SelectedPlace | null
   prefetchLoading: boolean
   canGenerate: boolean
-  audioPhase: 'idle' | 'loading' | 'playing'
-  /** True after the main tour clip has started (including first chunk of segmented TTS). */
-  mainTourPlaybackStarted: boolean
+  /** True when the tour player can be shown from the persona bridge (script done + audio prep or ready for manual play). */
+  bridgeTourContentReady: boolean
   stopTour: () => void
   cancelTourPrep: () => void
   /** Clears place/persona UI state; called after internal flow reset. */
@@ -34,8 +33,7 @@ export function useOnboardingFlow({
   selectedPlace,
   prefetchLoading,
   canGenerate,
-  audioPhase,
-  mainTourPlaybackStarted,
+  bridgeTourContentReady,
   stopTour,
   cancelTourPrep,
   onRestartApp,
@@ -82,15 +80,15 @@ export function useOnboardingFlow({
     return () => window.cancelAnimationFrame(id)
   }, [step, prefetchLoading, canGenerate])
 
-  /** When main audio actually starts (first chunk), show the tour card. */
+  /** When script + main audio are far enough along, show the full tour sheet (including manual play after autoplay is blocked). */
   useEffect(() => {
     if (step !== 'bridge_persona') return
-    if (audioPhase !== 'playing' && !mainTourPlaybackStarted) return
+    if (!bridgeTourContentReady) return
     const id = window.requestAnimationFrame(() => {
       setStep('tour')
     })
     return () => window.cancelAnimationFrame(id)
-  }, [step, audioPhase, mainTourPlaybackStarted])
+  }, [step, bridgeTourContentReady])
 
   const goBack = useCallback(() => {
     const syncKey = () => {
