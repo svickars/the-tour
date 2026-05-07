@@ -45,6 +45,8 @@ function AlbumSkeleton() {
 
 export type TourPlayerSheetProps = {
   selectedPlace: SelectedPlace
+  /** Saved custom name (or canonical label) for the header when this tour exists in local storage. */
+  placeHeadingLabel?: string
   narratorLabel: string
   scriptText: string
   scriptError: string | null
@@ -76,6 +78,7 @@ export type TourPlayerSheetProps = {
 
 export function TourPlayerSheet({
   selectedPlace,
+  placeHeadingLabel,
   narratorLabel,
   scriptText,
   scriptError,
@@ -108,14 +111,16 @@ export function TourPlayerSheet({
   const tourMenuRef = useRef<HTMLDivElement | null>(null)
   const placeTitleRef = useRef<HTMLHeadingElement>(null)
 
+  const labelForHeading = (placeHeadingLabel?.trim() || selectedPlace.label).trim()
+
   const { primary: placeTitle, secondary: placeSubtitle } = useMemo(
-    () => splitPlaceLabel(selectedPlace.label),
-    [selectedPlace.label],
+    () => splitPlaceLabel(labelForHeading),
+    [labelForHeading],
   )
 
   useLayoutEffect(() => {
-    placeTitleRef.current?.focus()
-  }, [])
+    placeTitleRef.current?.focus({ preventScroll: true })
+  }, [selectedPlace.lat, selectedPlace.lng, labelForHeading])
 
   useEffect(() => {
     if (!tourMenuOpen) return

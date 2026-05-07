@@ -451,6 +451,14 @@ export default function App() {
     return savedList.some((r) => placeFingerprint(r.place, r.persona) === fp)
   }, [selectedPlace, persona, savedList])
 
+  const tourSheetHeadingLabel = useMemo(() => {
+    if (!selectedPlace) return undefined
+    const fp = placeFingerprint(selectedPlace, persona)
+    const hit = savedList.find((r) => placeFingerprint(r.place, r.persona) === fp)
+    if (!hit) return undefined
+    return shareLabelForSavedTour(hit)
+  }, [selectedPlace, persona, savedList])
+
   const handleDeleteAllHistory = useCallback(async () => {
     const count = savedList.filter((r) => !r.favourited).length
     if (count === 0) return
@@ -546,6 +554,7 @@ export default function App() {
         >
           <header className="passerby-header">
             <p className="wordmark">elsewhere</p>
+            <p className="wordmark-tagline">An audio guide to everywhere.</p>
           </header>
 
           <section className="stack-section stack-section--location" aria-label="Location">
@@ -992,6 +1001,7 @@ export default function App() {
           >
             <TourPlayerSheet
               selectedPlace={selectedPlace}
+              placeHeadingLabel={tourSheetHeadingLabel}
               narratorLabel={PERSONAS.find((p) => p.id === persona)?.label ?? ''}
               scriptText={scriptText}
               scriptError={scriptError}

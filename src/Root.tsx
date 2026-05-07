@@ -30,7 +30,7 @@ export function Root() {
 
   useEffect(() => {
     const p = normalizePath(path)
-    document.title = p === '/privacy' ? 'Privacy · Elsewhere' : 'Elsewhere'
+    document.title = p === '/privacy' ? 'Privacy · Elsewhere' : 'Elsewhere — An audio guide to everywhere'
   }, [path])
 
   const route = normalizePath(path)

@@ -28,6 +28,9 @@
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
+	/* Shared with bottom sheets (fixed); sheets add horizontal padding to align with back layer */
+	--page-content-max: min(22.5rem, 100%);
+	--page-sheet-max: min(calc(22.5rem + 2.5rem), 100%);
 }
 
 .card-layer-back {
@@ -66,16 +69,19 @@
 }
 
 .card-layer-front {
-	position: absolute;
-	left: 0;
-	right: 0;
+	position: fixed;
+	left: 50%;
+	right: auto;
 	bottom: 0;
 	top: auto;
 	z-index: 4;
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
-	width: 100%;
+	width: var(--page-sheet-max, min(calc(22.5rem + 2.5rem), 100%));
+	max-width: 100%;
+	box-sizing: border-box;
+	transform: translateX(-50%);
 	/* Leave the top of the viewport for the dimmed previous step */
 	max-height: 80vh;
 	max-height: 80dvh;
@@ -165,12 +171,12 @@
 
 @keyframes passerby-drawer-in {
 	from {
-		transform: translate3d(0, 100%, 0);
+		transform: translate(-50%, 100%);
 		opacity: 0;
 	}
 
 	to {
-		transform: translate3d(0, 0, 0);
+		transform: translate(-50%, 0);
 		opacity: 1;
 	}
 }
@@ -179,6 +185,7 @@
 	.card-front-animate {
 		animation: none;
 		opacity: 1;
+		transform: translateX(-50%);
 	}
 }
 
@@ -239,6 +246,20 @@
 	color: transparent;
 }
 
+.wordmark-tagline {
+	margin: 0.45rem auto 0;
+	max-width: 22rem;
+	padding: 0 1rem;
+	box-sizing: border-box;
+	font-family: inherit;
+	font-size: clamp(0.88rem, 0.82rem + 0.2vmin, 0.98rem);
+	font-weight: 500;
+	letter-spacing: -0.01em;
+	line-height: 1.35;
+	text-align: center;
+	color: var(--text, #52525b);
+}
+
 .stack-section {
 	display: flex;
 	flex-direction: column;
@@ -249,7 +270,7 @@
 
 .stack-section--location {
 	align-self: center;
-	max-width: min(22.5rem, 100%);
+	max-width: var(--page-content-max, min(22.5rem, 100%));
 	align-items: center;
 	text-align: center;
 }
