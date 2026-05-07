@@ -36,6 +36,21 @@ function parseAnthropicErrorMessage(detail: string, status: number): string {
   return `Anthropic request failed (${status}).`
 }
 
+function safeJsonPayload(res: VercelResponse, status: number, payload: Record<string, unknown>): boolean {
+  try {
+    res.status(status).json(payload)
+    return true
+  } catch (err) {
+    console.error('[generate-script] response.json failed', err)
+    try {
+      res.status(status).send(typeof payload.error === 'string' ? payload.error : 'Request failed')
+    } catch {
+      /* ignore */
+    }
+    return false
+  }
+}
+
 function parsePersona(v: unknown): PersonaId | null {
   if (typeof v !== 'string') return null
   const s = v.trim().toLowerCase()
@@ -255,112 +270,149 @@ export default async function handler(
     return
   }
 
-  const rawBody = req.body
-  let body: unknown
   try {
-    body = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody
-  } catch {
-    res.status(400).json({ error: 'Invalid JSON body' })
-    return
-  }
+    const rawBody = req.body
+    let body: unknown
+    try {
+      body = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody
+    } catch {
+      res.status(400).json({ error: 'Invalid JSON body' })
+      return
+    }
 
-  if (!isRecord(body)) {
-    res.status(400).json({ error: 'Expected JSON object' })
-    return
-  }
+    if (!isRecord(body)) {
+      res.status(400).json({ error: 'Expected JSON object' })
+      return
+    }
 
-  const persona = parsePersona(body.persona)
-  if (!persona) {
-    res.status(400).json({ error: 'Invalid or missing persona' })
-    return
-  }
+    const persona = parsePersona(body.persona)
+    if (!persona) {
+      res.status(400).json({ error: 'Invalid or missing persona' })
+      return
+    }
 
-  const lat = Number(body.latitude)
-  const lng = Number(body.longitude)
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    res.status(400).json({ error: 'Invalid latitude or longitude' })
-    return
-  }
+    const lat = Number(body.latitude)
+    const lng = Number(body.longitude)
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      res.status(400).json({ error: 'Invalid latitude or longitude' })
+      return
+    }
 
-  const places = parsePlaces(body.places)
-  const wikiTitle = typeof body.wikiTitle === 'string' ? body.wikiTitle : ''
-  const wikiExtract = typeof body.wikiExtract === 'string' ? body.wikiExtract : ''
-  const placeScope =
-    body.placeScope === 'specific' || body.placeScope === 'broad' ? body.placeScope : 'broad'
-  const placeDetailsJson =
-    typeof body.placeDetailsJson === 'string' ? body.placeDetailsJson : ''
+    const places = parsePlaces(body.places)
+    const wikiTitle = typeof body.wikiTitle === 'string' ? body.wikiTitle : ''
+    const wikiExtract = typeof body.wikiExtract === 'string' ? body.wikiExtract : ''
+    const placeScope =
+      body.placeScope === 'specific' || body.placeScope === 'broad' ? body.placeScope : 'broad'
+    const placeDetailsJson =
+      typeof body.placeDetailsJson === 'string' ? body.placeDetailsJson : ''
 
-  if (places.length === 0 && !wikiTitle.trim() && !wikiExtract.trim()) {
-    res
-      .status(400)
-      .json({ error: 'Provide at least one place or Wikipedia content' })
-    return
-  }
+    if (places.length === 0 && !wikiTitle.trim() && !wikiExtract.trim()) {
+      res
+        .status(400)
+        .json({ error: 'Provide at least one place or Wikipedia content' })
+      return
+    }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim()
-  if (!apiKey) {
-    res.status(503).json({ error: 'Script generation is not configured (missing API key).' })
-    return
-  }
+    const apiKey = process.env.ANTHROPIC_API_KEY?.trim()
+    if (!apiKey) {
+      res.status(503).json({ error: 'Script generation is not configured (missing API key).' })
+      return
+    }
 
-  const vibeThemes = parseVibeThemes(body)
-  const system =
-    buildSystemPrompt(persona) +
-    (vibeThemes?.length ? vibeThemesInstructionBlock(vibeThemes) : '')
-  const userContent = buildUserContent({
-    latitude: lat,
-    longitude: lng,
-    places,
-    wikiTitle,
-    wikiExtract,
-    placeScope,
-    placeDetailsJson,
-  })
+    const vibeThemes = parseVibeThemes(body)
+    const system =
+      buildSystemPrompt(persona) +
+      (vibeThemes?.length ? vibeThemesInstructionBlock(vibeThemes) : '')
+    const userContent = buildUserContent({
+      latitude: lat,
+      longitude: lng,
+      places,
+      wikiTitle,
+      wikiExtract,
+      placeScope,
+      placeDetailsJson,
+    })
 
-  const model =
-    process.env.ANTHROPIC_MODEL?.trim() || DEFAULT_CLAUDE_MODEL
+    const model =
+      process.env.ANTHROPIC_MODEL?.trim() || DEFAULT_CLAUDE_MODEL
 
-  let upstream: Response
-  try {
-    upstream = await fetch(ANTHROPIC_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
-      },
-      body: JSON.stringify({
+    let anthropicBody: string
+    try {
+      anthropicBody = JSON.stringify({
         model,
         max_tokens: 4096,
         stream: true,
         system,
         messages: [{ role: 'user', content: userContent }],
-      }),
+      })
+    } catch (err) {
+      console.error('[generate-script] JSON.stringify(anthropic body) failed', err)
+      res.status(400).json({ error: 'Could not build request (invalid characters in tour data).' })
+      return
+    }
+
+    let upstream: Response
+    try {
+      upstream = await fetch(ANTHROPIC_URL, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': process.env.ANTHROPIC_API_VERSION?.trim() || ANTHROPIC_VERSION,
+        },
+        body: anthropicBody,
+      })
+    } catch (err) {
+      console.error('[generate-script] fetch Anthropic failed', err)
+      res.status(502).json({ error: 'Could not reach Anthropic API.' })
+      return
+    }
+
+    if (!upstream.ok) {
+      const detail = await upstream.text()
+      safeJsonPayload(res, 502, {
+        error: parseAnthropicErrorMessage(detail, upstream.status),
+        detail: detail.slice(0, 2000),
+      })
+      return
+    }
+
+    if (!upstream.body) {
+      safeJsonPayload(res, 502, { error: 'Anthropic returned no response body to stream.' })
+      return
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-store',
     })
-  } catch {
-    res.status(502).json({ error: 'Could not reach Anthropic API.' })
-    return
-  }
 
-  if (!upstream.ok) {
-    const detail = await upstream.text()
-    res.status(502).json({
-      error: parseAnthropicErrorMessage(detail, upstream.status),
-      detail: detail.slice(0, 2000),
-    })
-    return
-  }
-
-  res.writeHead(200, {
-    'Content-Type': 'application/x-ndjson; charset=utf-8',
-    'Cache-Control': 'no-store',
-  })
-
-  try {
-    await pipeAnthropicSseToNdjson(upstream.body, res)
+    try {
+      await pipeAnthropicSseToNdjson(upstream.body, res)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Stream failed'
+      try {
+        res.write(`${JSON.stringify({ error: msg })}\n`)
+      } catch (writeErr) {
+        console.error('[generate-script] stream error line write failed', writeErr)
+      }
+    }
+    try {
+      res.end()
+    } catch (endErr) {
+      console.error('[generate-script] res.end failed', endErr)
+    }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Stream failed'
-    res.write(`${JSON.stringify({ error: msg })}\n`)
+    console.error('[generate-script] unhandled', e)
+    if (!res.headersSent) {
+      const msg = e instanceof Error ? e.message : 'Script generation failed'
+      safeJsonPayload(res, 500, { error: msg })
+    } else {
+      try {
+        res.end()
+      } catch {
+        /* ignore */
+      }
+    }
   }
-  res.end()
 }

@@ -345,7 +345,7 @@ Persona texture:
       headers: {
         'content-type': 'application/json',
         'x-api-key': apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
+        'anthropic-version': process.env.ANTHROPIC_API_VERSION?.trim() || ANTHROPIC_VERSION,
       },
       body: JSON.stringify({
         model,
