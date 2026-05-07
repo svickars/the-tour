@@ -1,1 +1,1 @@
-export { cleanScript } from '../../lib/cleanScript'
+export { cleanScript } from '../../api/lib/cleanScript'

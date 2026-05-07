@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { cleanScript } from '../lib/cleanScript'
+import { cleanScript } from './lib/cleanScript'
 
 const ELEVEN_BASE = 'https://api.elevenlabs.io/v1/text-to-speech' as const
 const MODEL_ID = 'eleven_multilingual_v2' as const
