@@ -1,6 +1,8 @@
 import { PROMPT_VERSION } from './promptVersion'
 import type { AlbumTrack, SelectedPlace } from './tourTypes'
 import type { PersonaId } from './personas'
+import type { VibeId } from './vibes'
+import { VIBES } from './vibes'
 
 /** IndexedDB database name (unchanged) so existing saved tours keep working across renames. */
 const DB_NAME = 'passerby-saved-tours'
@@ -36,6 +38,20 @@ export type SavedTourRecord = {
   persona: PersonaId
   place: SelectedPlace
   tracks: SavedTourTrackRow[]
+  /** Vibes chosen for this tour (onboarding / sheet); omitted on legacy rows. */
+  vibeIds?: VibeId[]
+}
+
+const VIBE_ID_SET = new Set<VibeId>(VIBES.map((v) => v.id))
+
+function parseStoredVibeIds(raw: unknown): VibeId[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: VibeId[] = []
+  for (const x of raw) {
+    if (typeof x !== 'string') continue
+    if (VIBE_ID_SET.has(x as VibeId)) out.push(x as VibeId)
+  }
+  return out.length > 0 ? out : undefined
 }
 
 /** Legacy IndexedDB rows used `starred`; normalize on read. */
@@ -52,6 +68,7 @@ function normalizeRecord(raw: object): SavedTourRecord {
     persona: r.persona,
     place: r.place,
     tracks: r.tracks,
+    vibeIds: parseStoredVibeIds((r as { vibeIds?: unknown }).vibeIds),
   }
 }
 
@@ -76,9 +93,14 @@ async function buildTrackRows(tracks: AlbumTrack[]): Promise<SavedTourTrackRow[]
     let audioBytes: ArrayBuffer
     let audioMime = 'audio/mpeg'
     if (t.audioObjectUrl) {
-      const res = await fetch(t.audioObjectUrl)
-      audioBytes = await res.arrayBuffer()
-      audioMime = res.headers.get('content-type')?.split(';')[0]?.trim() || 'audio/mpeg'
+      try {
+        const res = await fetch(t.audioObjectUrl)
+        if (!res.ok) throw new Error('blob fetch failed')
+        audioBytes = await res.arrayBuffer()
+        audioMime = res.headers.get('content-type')?.split(';')[0]?.trim() || 'audio/mpeg'
+      } catch {
+        audioBytes = new ArrayBuffer(0)
+      }
     } else {
       audioBytes = new ArrayBuffer(0)
     }
@@ -99,6 +121,23 @@ async function buildTrackRows(tracks: AlbumTrack[]): Promise<SavedTourTrackRow[]
     })
   }
   return rows
+}
+
+/** When a new snapshot has no audio bytes for a stop, keep bytes already on disk (same `localId`). */
+function mergePreservedTrackAudio(
+  fresh: SavedTourTrackRow[],
+  previous: readonly SavedTourTrackRow[] | undefined,
+): SavedTourTrackRow[] {
+  if (!previous?.length) return fresh
+  const prevById = new Map(previous.map((r) => [r.localId, r]))
+  return fresh.map((row) => {
+    if (row.audioBytes.byteLength > 0) return row
+    const old = prevById.get(row.localId)
+    if (old && old.audioBytes.byteLength > 0) {
+      return { ...row, audioBytes: old.audioBytes, audioMime: old.audioMime }
+    }
+    return row
+  })
 }
 
 function stripLegacyStarredForPut(record: SavedTourRecord): SavedTourRecord {
@@ -231,6 +270,21 @@ export async function deleteAllNonFavouritedTours(): Promise<number> {
   })
 }
 
+/** Deletes every saved tour row (including favourited). Returns how many were removed. */
+export async function deleteAllSavedTours(): Promise<number> {
+  const before = await listSavedTours()
+  const n = before.length
+  if (n === 0) return 0
+  const db = await openDb()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error ?? new Error('clear store failed'))
+    tx.objectStore(STORE).clear()
+  })
+  return n
+}
+
 export function placeFingerprint(place: SelectedPlace, persona: PersonaId): string {
   if (place.placeId?.trim()) {
     return `pid:${place.placeId.trim()}|p:${persona}`
@@ -256,9 +310,11 @@ export async function upsertTourFromAlbum(input: {
   place: SelectedPlace
   persona: PersonaId
   tracks: AlbumTrack[]
+  vibeIds?: VibeId[]
 }): Promise<SavedTourRecord> {
-  const rows = await buildTrackRows(input.tracks)
   const existing = await findSavedTourByFingerprint(input.place, input.persona)
+  const built = await buildTrackRows(input.tracks)
+  const rows = mergePreservedTrackAudio(built, existing?.tracks)
   const now = Date.now()
   if (existing) {
     const next: SavedTourRecord = {
@@ -267,6 +323,7 @@ export async function upsertTourFromAlbum(input: {
       promptVersion: PROMPT_VERSION,
       place: input.place,
       tracks: rows,
+      vibeIds: input.vibeIds ?? existing.vibeIds,
     }
     await putSavedTour(next)
     return next
@@ -284,6 +341,7 @@ export async function upsertTourFromAlbum(input: {
     persona: input.persona,
     place: input.place,
     tracks: rows,
+    vibeIds: input.vibeIds,
   }
   await putSavedTour(record)
   return record

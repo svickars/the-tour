@@ -5,6 +5,7 @@ export type OnboardingStep =
   | 'place'
   | 'bridge_place'
   | 'persona'
+  | 'vibes'
   | 'bridge_persona'
   | 'tour'
 
@@ -80,7 +81,7 @@ export function useOnboardingFlow({
     return () => window.cancelAnimationFrame(id)
   }, [step, prefetchLoading, canGenerate])
 
-  /** When script + main audio are far enough along, show the full tour sheet (including manual play after autoplay is blocked). */
+  /** When the main script is done and main-stop audio is prepared, show the tour sheet for manual play. */
   useEffect(() => {
     if (step !== 'bridge_persona') return
     if (!bridgeTourContentReady) return
@@ -119,9 +120,18 @@ export function useOnboardingFlow({
     if (step === 'bridge_persona') {
       cancelTourPrep()
       bridge2Started.current = false
+      setStep('vibes')
+      return
+    }
+    if (step === 'vibes') {
       setStep('persona')
+      return
     }
   }, [step, stopTour, cancelTourPrep, selectedPlace, beforeLeaveTour])
+
+  const advanceToVibesSheet = useCallback(() => {
+    setStep('vibes')
+  }, [])
 
   const advanceToPersonaBridge = useCallback(() => {
     setStep('bridge_persona')
@@ -162,6 +172,7 @@ export function useOnboardingFlow({
     prefetchTimedOut,
     goBack,
     restart,
+    advanceToVibesSheet,
     advanceToPersonaBridge,
     overlayCoversPlace,
     enterTourFromLibrary,

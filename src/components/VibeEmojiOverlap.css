@@ -1,0 +1,25 @@
+.vibe-emoji-overlap {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.vibe-emoji-overlap__disc {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.42em;
+  height: 1.42em;
+  margin-left: -0.44em;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--border, #e4e4e7);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+  font-size: 0.78em;
+  line-height: 1;
+}
+
+.vibe-emoji-overlap__disc:first-child {
+  margin-left: 0;
+}

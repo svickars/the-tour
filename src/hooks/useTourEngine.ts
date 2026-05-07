@@ -10,6 +10,7 @@ import { cleanScript } from '../lib/cleanScript'
 import { googleMapsSearchUrl } from '../lib/externalLinks'
 import { findSentenceBoundaryNear, splitMainScriptIntoFourParts } from '../lib/mainScriptChunks'
 import type { PersonaId } from '../lib/personas'
+import { userFacingAudioErrorMessage } from '../lib/sanitizeAudioError'
 import { inferPlaceScope } from '../lib/placeScope'
 import { orderSecondariesForWalk } from '../lib/walkingOrder'
 import type { AlbumTrack, AlbumTrackStatus, SelectedPlace } from '../lib/tourTypes'
@@ -136,6 +137,9 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
   const [albumTracks, setAlbumTracks] = useState<AlbumTrack[]>([])
   const [albumError, setAlbumError] = useState<string | null>(null)
   const [secondariesRequestLoading, setSecondariesRequestLoading] = useState(false)
+  const [moreStopsLoading, setMoreStopsLoading] = useState(false)
+  const [moreStopsError, setMoreStopsError] = useState<string | null>(null)
+  const [lastAppendedStopIds, setLastAppendedStopIds] = useState<string[]>([])
 
   const [currentTrackIndex, setCurrentTrackIndex] = useState(0)
 
@@ -143,6 +147,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
   const ttsAbortRef = useRef<AbortController | null>(null)
   const secondaryListAbortRef = useRef<AbortController | null>(null)
   const secondarySynthAcRef = useRef<AbortController | null>(null)
+  const moreStopsAbortRef = useRef<AbortController | null>(null)
   /** Up to three script splits during streaming + matching TTS promises; final chunk TTS starts after stream. */
   const mainTtsStreamRef = useRef<MainStreamTts | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -161,12 +166,23 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
 
   const albumTracksRef = useRef<AlbumTrack[]>([])
   const currentTrackIndexRef = useRef(0)
+  /** Narrator for the current album (script + TTS); avoids stale `persona` when `startFullTour(personaOverride)` runs before React re-renders. */
+  const albumNarratorPersonaRef = useRef<PersonaId | null>(null)
   useEffect(() => {
     albumTracksRef.current = albumTracks
   }, [albumTracks])
   useEffect(() => {
     currentTrackIndexRef.current = currentTrackIndex
   }, [currentTrackIndex])
+
+  useEffect(() => {
+    if (lastAppendedStopIds.length === 0) return
+    const snap = lastAppendedStopIds.join('\u0000')
+    const id = window.setTimeout(() => {
+      setLastAppendedStopIds((cur) => (cur.join('\u0000') === snap ? [] : cur))
+    }, 750)
+    return () => window.clearTimeout(id)
+  }, [lastAppendedStopIds])
 
   const lat = selectedPlace?.lat
   const lng = selectedPlace?.lng
@@ -271,10 +287,13 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
   }, [releaseAudioResources])
 
   const cancelTourPrep = useCallback(() => {
+    albumNarratorPersonaRef.current = null
     secondaryListAbortRef.current?.abort()
     secondaryListAbortRef.current = null
     secondarySynthAcRef.current?.abort()
     secondarySynthAcRef.current = null
+    moreStopsAbortRef.current?.abort()
+    moreStopsAbortRef.current = null
     scriptAbortRef.current?.abort()
     scriptAbortRef.current = null
     mainTtsStreamRef.current = null
@@ -282,6 +301,9 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
     setScriptBusy(false)
     setScriptText('')
     setSecondariesRequestLoading(false)
+    setMoreStopsLoading(false)
+    setMoreStopsError(null)
+    setLastAppendedStopIds([])
     setAlbumError(null)
     revokeTrackUrls(albumTracksRef.current)
     setAlbumTracks([])
@@ -294,6 +316,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
       ttsAbortRef.current?.abort()
       secondaryListAbortRef.current?.abort()
       secondarySynthAcRef.current?.abort()
+      moreStopsAbortRef.current?.abort()
       releaseAudioResources()
       revokeTrackUrls(albumTracksRef.current)
     }
@@ -393,173 +416,80 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
     [releaseAudioResources],
   )
 
-  /**
-   * One Audio element: merge segment blobs as each TTS promise resolves, patch the main track URL,
-   * swap `src` while preserving playback time so the tour is one continuous file that grows.
-   */
-  const playGrowingMergedSegmentPromises = useCallback(
-    async (mainId: string, segmentPromises: Promise<Blob>[], signal: AbortSignal) => {
-      setAudioError(null)
-      releaseAudioResources()
-      setAudioPhase('loading')
-      if (signal.aborted) {
-        setAudioPhase('idle')
-        return
-      }
-      for (const p of segmentPromises) {
-        void p.catch(() => new Blob())
-      }
-
-      const audio = new Audio()
-      applyMobileAudioAttrs(audio)
-      audioRef.current = audio
-
-      const markStartedOnce = () => {
-        const idx = currentTrackIndexRef.current
-        setAlbumTracks((prev) =>
-          prev.map((t, i) => (i === idx ? { ...t, hasStartedPlayback: true } : t)),
-        )
-      }
-
-      let lastCommittedUrl: string | null = null
-      const blobs: Blob[] = []
-
-      const waitLoadedMetadata = () =>
-        new Promise<void>((resolve, reject) => {
-          const ok = () => {
-            audio.removeEventListener('loadedmetadata', ok)
-            audio.removeEventListener('error', bad)
-            resolve()
-          }
-          const bad = () => {
-            audio.removeEventListener('loadedmetadata', ok)
-            audio.removeEventListener('error', bad)
-            reject(new Error('Could not load audio'))
-          }
-          audio.addEventListener('loadedmetadata', ok, { once: true })
-          audio.addEventListener('error', bad, { once: true })
-        })
-
-      try {
-        for (let i = 0; i < segmentPromises.length; i++) {
-          if (signal.aborted) {
-            setAudioPhase('idle')
-            return
-          }
-          const piece = await segmentPromises[i]!
-          if (signal.aborted) {
-            setAudioPhase('idle')
-            return
-          }
-          blobs.push(piece)
-          const merged = new Blob(blobs, { type: 'audio/mpeg' })
-          const url = URL.createObjectURL(merged)
-
-          const prevTime = audio.src && audio.readyState >= 1 ? audio.currentTime : 0
-
-          audio.pause()
-          detachAudioUiRef.current?.()
-          detachAudioUiRef.current = attachAudioUiSync(
-            audio,
-            setCurrentTime,
-            setDuration,
-            setAudioPaused,
-          )
-          audio.src = url
-          audio.load()
-
-          try {
-            await waitLoadedMetadata()
-          } catch {
-            if (lastCommittedUrl) URL.revokeObjectURL(lastCommittedUrl)
-            URL.revokeObjectURL(url)
-            setAudioError('Could not play audio in this browser.')
-            releaseAudioResources()
-            setAudioPhase('idle')
-            return
-          }
-
-          if (lastCommittedUrl) URL.revokeObjectURL(lastCommittedUrl)
-          lastCommittedUrl = url
-          setAlbumTracks((prev) =>
-            prev.map((t) => (t.id === mainId ? { ...t, status: 'ready' as const, audioObjectUrl: url } : t)),
-          )
-
-          if (i > 0 && prevTime > 0) {
-            const d = audio.duration
-            const cap = Number.isFinite(d) && d > 0 ? Math.max(0, d - 0.06) : prevTime
-            audio.currentTime = Math.min(prevTime, cap)
-          }
-
-          if (i === 0) {
-            audio.addEventListener('play', markStartedOnce, { once: true })
-          }
-
-          setAudioPhase('playing')
-          try {
-            await audio.play()
-          } catch (e) {
-            if (!isAutoplayPolicyBlock(e)) {
-              setAudioError('Could not play audio in this browser.')
-            } else {
-              setAudioError(null)
-            }
-            releaseAudioResources()
-            setAudioPhase('idle')
-            return
-          }
-        }
-
-        audio.onended = () => {
-          releaseAudioResources({ keepTimeline: true })
-          setAudioPhase('idle')
-        }
-        audio.onerror = () => {
-          setAudioError('Could not play audio in this browser.')
-          releaseAudioResources()
-          setAudioPhase('idle')
-        }
-      } catch (e) {
-        if (e instanceof DOMException && e.name === 'AbortError') {
-          setAudioPhase('idle')
-          return
-        }
-        setAudioError(e instanceof Error ? e.message : 'Failed to load audio.')
-        releaseAudioResources()
-        setAudioPhase('idle')
-      }
-    },
-    [releaseAudioResources],
-  )
-
   /** Patch album track by stable id */
   const patchTrack = useCallback((id: string, patch: Partial<AlbumTrack>) => {
     setAlbumTracks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)))
   }, [])
 
+  /** Await TTS segment blobs, merge into one MP3 object URL, mark main track ready — no playback. */
+  const prepareMainTrackFromSegmentBlobs = useCallback(
+    async (mainId: string, segmentPromises: Promise<Blob>[], signal: AbortSignal) => {
+      setAudioError(null)
+      for (const p of segmentPromises) {
+        void p.catch(() => new Blob())
+      }
+      try {
+        const pieces: Blob[] = []
+        for (let i = 0; i < segmentPromises.length; i++) {
+          if (signal.aborted) return
+          const piece = await segmentPromises[i]!
+          if (signal.aborted) return
+          pieces.push(piece)
+        }
+        if (signal.aborted) return
+        const merged = new Blob(pieces, { type: 'audio/mpeg' })
+        const url = URL.createObjectURL(merged)
+        patchTrack(mainId, { status: 'ready', audioObjectUrl: url })
+        setAudioPhase('idle')
+      } catch (e) {
+        if (e instanceof DOMException && e.name === 'AbortError') return
+        const msg = userFacingAudioErrorMessage(e)
+        setAudioError(msg)
+        patchTrack(mainId, { status: 'error', errorMessage: msg })
+        setAudioPhase('idle')
+      } finally {
+        if (signal.aborted) {
+          setAudioPhase((ph) => (ph === 'loading' ? 'idle' : ph))
+          const cur = albumTracksRef.current.find((x) => x.id === mainId)
+          if (cur && cur.status !== 'ready') {
+            patchTrack(mainId, { status: 'queued', errorMessage: undefined, audioObjectUrl: undefined })
+          }
+        }
+      }
+    },
+    [patchTrack],
+  )
+
   const fetchSecondaries = useCallback(
-    async (mainScript: string, signal: AbortSignal) => {
+    async (
+      mainScript: string,
+      signal: AbortSignal,
+      narrativePersona: PersonaId,
+      vibeThemes?: string[],
+    ) => {
       setSecondariesRequestLoading(true)
       setAlbumError(null)
       const placesPayload = nearby?.ok === true ? nearby.places : []
       const wikiTitle = wiki?.ok === true ? wiki.title : ''
       const wikiExtract = wiki?.ok === true ? wiki.extract : ''
       try {
+        const body: Record<string, unknown> = {
+          persona: narrativePersona,
+          mainScript,
+          places: placesPayload,
+          wikiTitle,
+          wikiExtract,
+          latitude: lat,
+          longitude: lng,
+          placeScope,
+          placeDetailsJson,
+        }
+        if (vibeThemes?.length) body.vibeThemes = vibeThemes
         const res = await fetch('/api/generate-secondary-tracks', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal,
-          body: JSON.stringify({
-            persona,
-            mainScript,
-            places: placesPayload,
-            wikiTitle,
-            wikiExtract,
-            latitude: lat,
-            longitude: lng,
-            placeScope,
-            placeDetailsJson,
-          }),
+          body: JSON.stringify(body),
         })
         if (!res.ok) {
           let msg = `Album tracks failed (${res.status})`
@@ -569,7 +499,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
           } catch {
             /* */
           }
-          setAlbumError(msg)
+          setAlbumError(userFacingAudioErrorMessage(new Error(msg)))
           return []
         }
         const j = (await res.json()) as {
@@ -608,20 +538,133 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
         return ordered
       } catch (e) {
         if (e instanceof DOMException && e.name === 'AbortError') return []
-        setAlbumError(e instanceof Error ? e.message : 'Could not load album tracks.')
+        setAlbumError(userFacingAudioErrorMessage(e))
         return []
       } finally {
         setSecondariesRequestLoading(false)
       }
     },
-    [lat, lng, persona, nearby, wiki, placeScope, placeDetailsJson],
+    [lat, lng, nearby, wiki, placeScope, placeDetailsJson],
+  )
+
+  const appendMoreStops = useCallback(
+    async (vibeThemes?: string[]): Promise<boolean> => {
+      const main = albumTracksRef.current[0]
+      if (!main?.scriptText?.trim()) return false
+      if (lat == null || lng == null) return false
+
+      const voicePersona = albumNarratorPersonaRef.current ?? persona
+
+      moreStopsAbortRef.current?.abort()
+      const ac = new AbortController()
+      moreStopsAbortRef.current = ac
+
+      setMoreStopsLoading(true)
+      setMoreStopsError(null)
+
+      const placesPayload = nearby?.ok === true ? nearby.places : []
+      const wikiTitle = wiki?.ok === true ? wiki.title : ''
+      const wikiExtract = wiki?.ok === true ? wiki.extract : ''
+
+      try {
+        const existingStops = albumTracksRef.current.map((t) => ({
+          title: t.title,
+          mapsSearchQuery: t.mapsSearchQuery?.trim() || undefined,
+        }))
+        const body: Record<string, unknown> = {
+          persona: voicePersona,
+          mainScript: main.scriptText,
+          places: placesPayload,
+          wikiTitle,
+          wikiExtract,
+          latitude: lat,
+          longitude: lng,
+          placeScope,
+          placeDetailsJson,
+          existingStops,
+          mainPinLabel: selectedPlace?.label?.trim() ?? '',
+        }
+        if (vibeThemes?.length) body.vibeThemes = vibeThemes
+
+        const res = await fetch('/api/generate-more-stops', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: ac.signal,
+          body: JSON.stringify(body),
+        })
+        if (!res.ok) {
+          let msg = `More stops failed (${res.status})`
+          try {
+            const j = (await res.json()) as { error?: string }
+            if (typeof j.error === 'string' && j.error.trim()) msg = j.error.trim()
+          } catch {
+            /* */
+          }
+          setMoreStopsError(userFacingAudioErrorMessage(new Error(msg)))
+          return false
+        }
+        const j = (await res.json()) as {
+          tracks?: {
+            id: string
+            title: string
+            script: string
+            description?: string
+            lat?: number
+            lng?: number
+            mapsSearchQuery?: string
+            googleMapsUrl?: string
+            wikipediaUrl?: string
+            rating?: number
+          }[]
+        }
+        const raw = Array.isArray(j.tracks) ? j.tracks : []
+        if (raw.length === 0) {
+          return false
+        }
+        const mapped: AlbumTrack[] = raw.map((row, i) => ({
+          id: row.id || `more-${Date.now()}-${i}`,
+          title: row.title,
+          description: row.description,
+          orderIndex: 0,
+          status: 'queued' as AlbumTrackStatus,
+          scriptText: row.script,
+          mapsSearchQuery: row.mapsSearchQuery,
+          googleMapsUrl:
+            row.googleMapsUrl?.trim() ||
+            googleMapsSearchUrl(row.mapsSearchQuery?.trim() || row.title),
+          wikipediaUrl: row.wikipediaUrl?.trim() || undefined,
+          lat: row.lat,
+          lng: row.lng,
+          rating: row.rating,
+          hasStartedPlayback: false,
+        }))
+        const ordered = orderSecondariesForWalk(lat, lng, mapped)
+        const ids = ordered.map((t) => t.id)
+        setLastAppendedStopIds(ids)
+        setAlbumTracks((prev) => {
+          const base = prev.length
+          const appended = ordered.map((t, i) => ({ ...t, orderIndex: base + i }))
+          return [...prev, ...appended]
+        })
+        return true
+      } catch (e) {
+        if (e instanceof DOMException && e.name === 'AbortError') return false
+        setMoreStopsError(userFacingAudioErrorMessage(e))
+        return false
+      } finally {
+        setMoreStopsLoading(false)
+        if (moreStopsAbortRef.current === ac) moreStopsAbortRef.current = null
+      }
+    },
+    [lat, lng, nearby, wiki, placeScope, placeDetailsJson, selectedPlace, persona],
   )
 
   const synthesizeTrackAudio = useCallback(
     async (trackId: string, rawScript: string, signal: AbortSignal) => {
+      const voicePersona = albumNarratorPersonaRef.current ?? persona
       patchTrack(trackId, { status: 'synthesizing', errorMessage: undefined })
       try {
-        const blob = await ttsBlobFor(rawScript, persona, signal)
+        const blob = await ttsBlobFor(rawScript, voicePersona, signal)
         if (signal.aborted) return
         const url = URL.createObjectURL(blob)
         patchTrack(trackId, { status: 'ready', audioObjectUrl: url })
@@ -629,7 +672,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
         if (e instanceof DOMException && e.name === 'AbortError') return
         patchTrack(trackId, {
           status: 'error',
-          errorMessage: e instanceof Error ? e.message : 'TTS failed',
+          errorMessage: userFacingAudioErrorMessage(e),
         })
       }
     },
@@ -637,7 +680,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
   )
 
   const startFullTour = useCallback(
-    async (personaOverride?: PersonaId) => {
+    async (personaOverride?: PersonaId, vibeThemes?: string[]) => {
       const voicePersona = personaOverride ?? persona
       setScriptError(null)
       setAudioError(null)
@@ -676,20 +719,22 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
       let accumulated = ''
 
       try {
+        const scriptBody: Record<string, unknown> = {
+          persona: voicePersona,
+          places: placesPayload,
+          wikiTitle,
+          wikiExtract,
+          latitude: lat,
+          longitude: lng,
+          placeScope,
+          placeDetailsJson,
+        }
+        if (vibeThemes?.length) scriptBody.vibeThemes = vibeThemes
         const res = await fetch('/api/generate-script', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: scriptAc.signal,
-          body: JSON.stringify({
-            persona: voicePersona,
-            places: placesPayload,
-            wikiTitle,
-            wikiExtract,
-            latitude: lat,
-            longitude: lng,
-            placeScope,
-            placeDetailsJson,
-          }),
+          body: JSON.stringify(scriptBody),
         })
 
         if (!res.ok) {
@@ -810,6 +855,8 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
           ? wikipediaArticleUrl(wiki.title)
           : wikipediaSearchUrl(selectedPlace?.label?.trim() || mainMapsQuery)
 
+      albumNarratorPersonaRef.current = voicePersona
+
       setAlbumTracks([
         {
           id: mainId,
@@ -826,7 +873,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
       ])
 
       void (async () => {
-        const secs = await fetchSecondaries(fullScript, listAc.signal)
+        const secs = await fetchSecondaries(fullScript, listAc.signal, voicePersona, vibeThemes)
         if (listAc.signal.aborted) return
         setAlbumTracks((prev) => {
           const main = prev[0]
@@ -836,21 +883,22 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
       })()
 
       setAudioPhase('loading')
+      releaseAudioResources()
       try {
         if (st?.e2 != null && st.p2 && st.e3 != null && st.p3) {
           const p4 = ttsBlobFor(accumulated.slice(st.e3).trim(), voicePersona, ttsAc.signal)
-          await playGrowingMergedSegmentPromises(mainId, [st.p1, st.p2, st.p3, p4], ttsAc.signal)
+          await prepareMainTrackFromSegmentBlobs(mainId, [st.p1, st.p2, st.p3, p4], ttsAc.signal)
         } else if (st?.e2 != null && st.p2) {
           const p3 = ttsBlobFor(accumulated.slice(st.e2).trim(), voicePersona, ttsAc.signal)
-          await playGrowingMergedSegmentPromises(mainId, [st.p1, st.p2, p3], ttsAc.signal)
+          await prepareMainTrackFromSegmentBlobs(mainId, [st.p1, st.p2, p3], ttsAc.signal)
         } else if (st) {
           const pTail = ttsBlobFor(accumulated.slice(st.e1).trim(), voicePersona, ttsAc.signal)
-          await playGrowingMergedSegmentPromises(mainId, [st.p1, pTail], ttsAc.signal)
+          await prepareMainTrackFromSegmentBlobs(mainId, [st.p1, pTail], ttsAc.signal)
         } else {
           const quad = splitMainScriptIntoFourParts(fullScript)
           if (quad) {
             const [a, b, c, d] = quad
-            await playGrowingMergedSegmentPromises(
+            await prepareMainTrackFromSegmentBlobs(
               mainId,
               [
                 ttsBlobFor(a, voicePersona, ttsAc.signal),
@@ -865,18 +913,27 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
             if (ttsAc.signal.aborted) return
             const url = URL.createObjectURL(mergedBlob)
             patchTrack(mainId, { status: 'ready', audioObjectUrl: url })
-            await playBlobUrl(url, ttsAc.signal)
+            setAudioPhase('idle')
             if (ttsAbortRef.current === ttsAc) ttsAbortRef.current = null
             return
           }
         }
       } catch (e) {
         if (e instanceof DOMException && e.name === 'AbortError') return
-        setAudioError(e instanceof Error ? e.message : 'Failed to load audio.')
+        const msg = userFacingAudioErrorMessage(e)
+        setAudioError(msg)
+        patchTrack(mainId, { status: 'error', errorMessage: msg })
         releaseAudioResources()
         setAudioPhase('idle')
       } finally {
         if (ttsAbortRef.current === ttsAc) ttsAbortRef.current = null
+        if (ttsAc.signal.aborted) {
+          setAudioPhase((ph) => (ph === 'loading' ? 'idle' : ph))
+          const cur = albumTracksRef.current.find((x) => x.id === mainId)
+          if (cur && cur.status !== 'ready') {
+            patchTrack(mainId, { status: 'queued', errorMessage: undefined, audioObjectUrl: undefined })
+          }
+        }
       }
     },
     [
@@ -892,8 +949,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
       placeDetailsJson,
       fetchSecondaries,
       patchTrack,
-      playBlobUrl,
-      playGrowingMergedSegmentPromises,
+      prepareMainTrackFromSegmentBlobs,
       releaseAudioResources,
     ],
   )
@@ -1006,7 +1062,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
   )
 
   const restartAudioFromStart = useCallback(async () => {
-    const idx = currentTrackIndex
+    const idx = currentTrackIndexRef.current
     const t = albumTracksRef.current[idx]
     if (!t?.scriptText.trim()) return
     const a = audioRef.current
@@ -1021,7 +1077,49 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
       ttsAbortRef.current = new AbortController()
       await playBlobUrl(t.audioObjectUrl, ttsAbortRef.current.signal)
     }
-  }, [audioPhase, currentTrackIndex, playBlobUrl])
+  }, [audioPhase, playBlobUrl])
+
+  /** Re-request TTS for the current stop (e.g. after a network or upstream failure). */
+  const retryCurrentTrackNarration = useCallback(async () => {
+    setAudioError(null)
+    const idx = currentTrackIndexRef.current
+    const t = albumTracksRef.current[idx]
+    if (!t?.scriptText.trim()) return
+
+    const voicePersona = albumNarratorPersonaRef.current ?? persona
+    ttsAbortRef.current?.abort()
+    const ac = new AbortController()
+    ttsAbortRef.current = ac
+
+    const prevUrl = t.audioObjectUrl
+    if (prevUrl) URL.revokeObjectURL(prevUrl)
+
+    setAudioPhase('loading')
+    patchTrack(t.id, { status: 'synthesizing', errorMessage: undefined })
+
+    try {
+      const blob = await ttsBlobFor(t.scriptText, voicePersona, ac.signal)
+      if (ac.signal.aborted) return
+      const url = URL.createObjectURL(blob)
+      patchTrack(t.id, { status: 'ready', audioObjectUrl: url })
+      setAudioPhase('idle')
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return
+      const msg = userFacingAudioErrorMessage(e)
+      setAudioError(msg)
+      patchTrack(t.id, { status: 'error', errorMessage: msg })
+      setAudioPhase('idle')
+    } finally {
+      if (ttsAbortRef.current === ac) ttsAbortRef.current = null
+      setAudioPhase((ph) => (ph === 'loading' ? 'idle' : ph))
+      if (ac.signal.aborted) {
+        const cur = albumTracksRef.current.find((x) => x.id === t.id)
+        if (cur?.status === 'synthesizing') {
+          patchTrack(t.id, { status: 'queued', errorMessage: undefined, audioObjectUrl: undefined })
+        }
+      }
+    }
+  }, [persona, patchTrack])
 
   const tourBusy = scriptBusy || audioBusy || secondariesRequestLoading
 
@@ -1033,19 +1131,25 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
       return
     }
     if (audioPhase === 'idle') {
-      const t = albumTracksRef.current[currentTrackIndex]
+      const t = albumTracksRef.current[currentTrackIndexRef.current]
       if (t?.audioObjectUrl) {
         void restartAudioFromStart()
       }
     }
-  }, [audioPhase, currentTrackIndex, restartAudioFromStart])
+  }, [audioPhase, restartAudioFromStart])
 
-  const restoreAlbumFromTracks = useCallback((tracks: AlbumTrack[]) => {
+  const restoreAlbumFromTracks = useCallback((tracks: AlbumTrack[], narratorPersona?: PersonaId) => {
     scriptAbortRef.current?.abort()
     secondaryListAbortRef.current?.abort()
+    moreStopsAbortRef.current?.abort()
+    moreStopsAbortRef.current = null
     stopTour()
+    albumNarratorPersonaRef.current = narratorPersona ?? null
     setScriptBusy(false)
     setSecondariesRequestLoading(false)
+    setMoreStopsLoading(false)
+    setMoreStopsError(null)
+    setLastAppendedStopIds([])
     revokeTrackUrls(albumTracksRef.current)
     setAlbumTracks(tracks.map((t) => ({ ...t, hasStartedPlayback: false })))
     setScriptText(tracks[0]?.scriptText ?? '')
@@ -1084,6 +1188,11 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
     seekBy,
     seekTo,
     restartAudioFromStart,
+    retryCurrentTrackNarration,
     restoreAlbumFromTracks,
+    appendMoreStops,
+    moreStopsLoading,
+    moreStopsError,
+    lastAppendedStopIds,
   }
 }

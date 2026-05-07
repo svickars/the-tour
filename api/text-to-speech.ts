@@ -3,21 +3,74 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 const ELEVEN_BASE = 'https://api.elevenlabs.io/v1/text-to-speech' as const
 const MODEL_ID = 'eleven_multilingual_v2' as const
 
-type PersonaId = 'deadpan' | 'enthusiastic' | 'haunted'
+type PersonaId = 'deadpan' | 'enthusiastic' | 'haunted' | 'rick' | 'rosa' | 'gary' | 'thomas' | 'vega'
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null
 }
 
 function parsePersona(v: unknown): PersonaId | null {
-  return v === 'deadpan' || v === 'enthusiastic' || v === 'haunted' ? v : null
+  if (typeof v !== 'string') return null
+  const s = v.trim().toLowerCase()
+  return s === 'deadpan' ||
+    s === 'enthusiastic' ||
+    s === 'haunted' ||
+    s === 'rick' ||
+    s === 'rosa' ||
+    s === 'gary' ||
+    s === 'thomas' ||
+    s === 'vega'
+    ? (s as PersonaId)
+    : null
 }
 
 /**
- * Maps UI persona to ElevenLabs voice env vars (Claude-suggested layout).
- * `enthusiastic` → `ELEVENLABS_VOICE_LOCAL`. Falls back to `ELEVENLABS_VOICE_ID`, then deadpan voice.
+ * Maps UI persona to ElevenLabs voice env vars.
+ * `enthusiastic` → `ELEVENLABS_VOICE_LOCAL`.
+ * `rick` → `ELEVENLABS_VOICE_CHILL` or `ELEVENLABS_VOICE_RICK` only (no fallback to deadpan — that caused the wrong voice when CHILL was unset).
+ * `rosa` → `ELEVENLABS_VOICE_WARM` or `ELEVENLABS_VOICE_ROSA` only.
+ * `gary` → `ELEVENLABS_VOICE_ABSURD` or `ELEVENLABS_VOICE_GARY` only.
+ * `thomas` → `ELEVENLABS_VOICE_VICTORIAN` or `ELEVENLABS_VOICE_THOMAS` only.
+ * `vega` → `ELEVENLABS_VOICE_ALIEN` or `ELEVENLABS_VOICE_VEGA` only.
+ * Other personas fall back to `ELEVENLABS_VOICE_ID`, then deadpan.
  */
 function resolveVoiceId(persona: PersonaId): string | null {
+  if (persona === 'rick') {
+    return (
+      process.env.ELEVENLABS_VOICE_CHILL?.trim() ||
+      process.env.ELEVENLABS_VOICE_RICK?.trim() ||
+      null
+    )
+  }
+  if (persona === 'rosa') {
+    return (
+      process.env.ELEVENLABS_VOICE_WARM?.trim() ||
+      process.env.ELEVENLABS_VOICE_ROSA?.trim() ||
+      null
+    )
+  }
+  if (persona === 'gary') {
+    return (
+      process.env.ELEVENLABS_VOICE_ABSURD?.trim() ||
+      process.env.ELEVENLABS_VOICE_GARY?.trim() ||
+      null
+    )
+  }
+  if (persona === 'thomas') {
+    return (
+      process.env.ELEVENLABS_VOICE_VICTORIAN?.trim() ||
+      process.env.ELEVENLABS_VOICE_THOMAS?.trim() ||
+      null
+    )
+  }
+  if (persona === 'vega') {
+    return (
+      process.env.ELEVENLABS_VOICE_ALIEN?.trim() ||
+      process.env.ELEVENLABS_VOICE_VEGA?.trim() ||
+      null
+    )
+  }
+
   const voiceMap = {
     deadpan: process.env.ELEVENLABS_VOICE_DEADPAN?.trim(),
     local: process.env.ELEVENLABS_VOICE_LOCAL?.trim(),
@@ -146,9 +199,22 @@ async function handleTextToSpeech(req: VercelRequest, res: VercelResponse): Prom
 
   const voiceId = resolveVoiceId(persona)
   if (!voiceId) {
+    const dedicatedHint =
+      persona === 'rick'
+        ? ' For Rick, set ELEVENLABS_VOICE_CHILL or ELEVENLABS_VOICE_RICK to an ElevenLabs voice id (Rick does not fall back to other narrators).'
+        : persona === 'rosa'
+          ? ' For Rosa, set ELEVENLABS_VOICE_WARM or ELEVENLABS_VOICE_ROSA to an ElevenLabs voice id (Rosa does not fall back to other narrators).'
+          : persona === 'gary'
+            ? ' For Gary, set ELEVENLABS_VOICE_ABSURD or ELEVENLABS_VOICE_GARY to an ElevenLabs voice id (Gary does not fall back to other narrators).'
+            : persona === 'thomas'
+              ? ' For Thomas, set ELEVENLABS_VOICE_VICTORIAN or ELEVENLABS_VOICE_THOMAS to an ElevenLabs voice id (Thomas does not fall back to other narrators).'
+              : persona === 'vega'
+                ? ' For Vega, set ELEVENLABS_VOICE_ALIEN or ELEVENLABS_VOICE_VEGA to an ElevenLabs voice id (Vega does not fall back to other narrators).'
+                : ''
     res.status(503).json({
       error:
-        'Text-to-speech is not configured (set ELEVENLABS_VOICE_* or ELEVENLABS_VOICE_ID).',
+        'Text-to-speech is not configured (set ELEVENLABS_VOICE_* or ELEVENLABS_VOICE_ID).' +
+        dedicatedHint,
     })
     return
   }

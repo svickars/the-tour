@@ -31,7 +31,14 @@ export function parseTourSearchParams(search: string): Partial<TourUrlParams> | 
   const label = sp.get('label')?.trim()
   const personaRaw = sp.get('persona')?.trim()
   const persona =
-    personaRaw === 'deadpan' || personaRaw === 'enthusiastic' || personaRaw === 'haunted'
+    personaRaw === 'deadpan' ||
+    personaRaw === 'enthusiastic' ||
+    personaRaw === 'haunted' ||
+    personaRaw === 'rick' ||
+    personaRaw === 'rosa' ||
+    personaRaw === 'gary' ||
+    personaRaw === 'thomas' ||
+    personaRaw === 'vega'
       ? personaRaw
       : undefined
   const placeId = sp.get('placeId')?.trim() || undefined

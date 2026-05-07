@@ -13,6 +13,8 @@ import {
   ChevronLeft,
   Dices,
   Heart,
+  History,
+  Home,
   Loader2,
   MapPin,
   MoreVertical,
@@ -23,8 +25,11 @@ import {
   Trash2,
 } from 'lucide-react'
 import { GenerationStatusTheater } from './components/GenerationStatusTheater'
+import { LoadingDisclaimer } from './components/LoadingDisclaimer'
+import { PersonaAvatar } from './components/PersonaAvatar'
 import { PlacesSearch } from './components/PlacesSearch'
 import { TourPlayerSheet } from './components/TourPlayerSheet'
+import { VibeEmojiOverlap } from './components/VibeEmojiOverlap'
 import './components/TourPlayerSheet.css'
 import {
   pickRandomPlace,
@@ -40,10 +45,13 @@ import {
   useTourEngine,
 } from './hooks/useTourEngine'
 import { type PersonaId, PERSONAS } from './lib/personas'
+import { readPersistedPersona, writePersistedPersona } from './lib/persistedPersona'
+import { mergeVibeUnion, toggleVibeSelection, vibesForApi, VIBES, type VibeId } from './lib/vibes'
 import { useNav } from './NavContext'
 import {
   albumTracksFromSaved,
   deleteAllNonFavouritedTours,
+  deleteAllSavedTours,
   deleteSavedTour,
   findSavedTourByFingerprint,
   listSavedTours,
@@ -59,6 +67,14 @@ import { shortenSavedPlaceTitle } from './lib/placeHeading'
 import './App.css'
 
 const mapsKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined
+
+type HomePanel = 'favourites' | 'discover' | 'visited'
+
+const HOME_PANEL_ORDER: HomePanel[] = ['favourites', 'discover', 'visited']
+
+function homePanelIndex(panel: HomePanel): number {
+  return HOME_PANEL_ORDER.indexOf(panel)
+}
 
 function placeKey(p: SelectedPlace): string {
   if (p.placeId?.trim()) return `pid:${p.placeId.trim()}`
@@ -203,14 +219,23 @@ export default function App() {
   const nav = useNav()
   const [selectedPlace, setSelectedPlace] = useState<SelectedPlace | null>(null)
   const [shuffleSeed, setShuffleSeed] = useState(() => Math.floor(Math.random() * 1e9))
-  const [persona, setPersona] = useState<PersonaId>('deadpan')
+  const [persona, setPersona] = useState<PersonaId>(() => readPersistedPersona() ?? 'deadpan')
+  const [vibeSelection, setVibeSelection] = useState<VibeId[]>([])
+  /** Union of vibes used for the tour (initial + each successful “find more”); shown in header and persisted. */
+  const [tourVibeChipUnion, setTourVibeChipUnion] = useState<VibeId[]>([])
 
   const [savedList, setSavedList] = useState<SavedTourRecord[]>([])
   const [savedMenuId, setSavedMenuId] = useState<string | null>(null)
   const [savedShareOkId, setSavedShareOkId] = useState<string | null>(null)
+  const [homePanel, setHomePanel] = useState<HomePanel>('discover')
+  const [favouritesVisibleCount, setFavouritesVisibleCount] = useState(5)
+  const [visitedVisibleCount, setVisitedVisibleCount] = useState(5)
   const [renameModal, setRenameModal] = useState<{ id: string; draft: string } | null>(null)
+  const [clearHistoryOpen, setClearHistoryOpen] = useState(false)
+  const [clearHistoryFavouritesToo, setClearHistoryFavouritesToo] = useState(false)
   const renameInputRef = useRef<HTMLInputElement>(null)
   const renameTitleId = useId()
+  const clearHistoryTitleId = useId()
 
   const refreshSaved = useCallback(async () => {
     try {
@@ -224,15 +249,12 @@ export default function App() {
     () => savedList.filter((r) => r.favourited),
     [savedList],
   )
-  const historyList = useMemo(
-    () => savedList.filter((r) => !r.favourited),
-    [savedList],
-  )
 
   const handleRestartApp = useCallback(() => {
     setSelectedPlace(null)
-    setPersona('deadpan')
     setShuffleSeed(Math.floor(Math.random() * 1e9))
+    setVibeSelection([])
+    setTourVibeChipUnion([])
     void refreshSaved()
   }, [refreshSaved])
 
@@ -263,31 +285,36 @@ export default function App() {
     seekBy,
     seekTo,
     restoreAlbumFromTracks,
+    retryCurrentTrackNarration,
+    appendMoreStops,
+    moreStopsLoading,
+    moreStopsError,
+    lastAppendedStopIds,
   } = useTourEngine(selectedPlace, persona)
 
   const flushAutosaveTour = useCallback(async () => {
     if (!selectedPlace || albumTracks.length === 0) return
     try {
-      await upsertTourFromAlbum({ place: selectedPlace, persona, tracks: albumTracks })
+      await upsertTourFromAlbum({
+        place: selectedPlace,
+        persona,
+        tracks: albumTracks,
+        vibeIds: tourVibeChipUnion,
+      })
       await refreshSaved()
     } catch {
       /* ignore persist errors */
     }
-  }, [selectedPlace, persona, albumTracks, refreshSaved])
+  }, [selectedPlace, persona, albumTracks, tourVibeChipUnion, refreshSaved])
 
   const bridgeTourContentReady = useMemo(() => {
     const main = albumTracks[0]
     if (!main?.scriptText?.trim()) return false
     if (scriptBusy) return false
-    return (
-      audioPhase === 'playing' ||
-      audioPhase === 'loading' ||
-      Boolean(main.hasStartedPlayback) ||
-      (audioPhase === 'idle' && Boolean(main.audioObjectUrl))
-    )
+    return audioPhase === 'idle' && Boolean(main.audioObjectUrl)
   }, [albumTracks, scriptBusy, audioPhase])
 
-  const { step, prefetchTimedOut, goBack, restart, advanceToPersonaBridge, overlayCoversPlace, enterTourFromLibrary, dismissTourSheet } =
+  const { step, prefetchTimedOut, goBack, restart, advanceToVibesSheet, advanceToPersonaBridge, overlayCoversPlace, enterTourFromLibrary, dismissTourSheet } =
     useOnboardingFlow({
       selectedPlace,
       prefetchLoading,
@@ -312,6 +339,8 @@ export default function App() {
   )
 
   const handleSearchSelect = useCallback((p: SelectedPlace) => {
+    setVibeSelection([])
+    setTourVibeChipUnion([])
     setSelectedPlace(p)
   }, [])
 
@@ -321,6 +350,8 @@ export default function App() {
       timeout: 15_000,
       maximumAge: 0,
       onSuccess: (lat, lng) => {
+        setVibeSelection([])
+        setTourVibeChipUnion([])
         setSelectedPlace({
           label: 'Your location',
           lat,
@@ -334,6 +365,10 @@ export default function App() {
     stopTour()
   }, [selectedPlace?.lat, selectedPlace?.lng, stopTour])
 
+  useEffect(() => {
+    writePersistedPersona(persona)
+  }, [persona])
+
   const selectedKey = selectedPlace ? placeKey(selectedPlace) : null
 
   useEffect(() => {
@@ -346,6 +381,8 @@ export default function App() {
     const parsed = parseTourSearchParams(window.location.search)
     if (!parsed || !Number.isFinite(parsed.lat) || !Number.isFinite(parsed.lng) || !parsed.label) return
     queueMicrotask(() => {
+      setVibeSelection([])
+      setTourVibeChipUnion([])
       setSelectedPlace(
         tourParamsToSelectedPlace({
           lat: parsed.lat,
@@ -441,14 +478,19 @@ export default function App() {
     const prior = await findSavedTourByFingerprint(selectedPlace, persona)
     const nextFav = !prior?.favourited
     try {
-      await upsertTourFromAlbum({ place: selectedPlace, persona, tracks: albumTracks })
+      await upsertTourFromAlbum({
+        place: selectedPlace,
+        persona,
+        tracks: albumTracks,
+        vibeIds: tourVibeChipUnion,
+      })
       const row = await findSavedTourByFingerprint(selectedPlace, persona)
       if (row) await updateSavedTourFavourite(row.id, nextFav)
       await refreshSaved()
     } catch {
       /* ignore */
     }
-  }, [selectedPlace, persona, albumTracks, refreshSaved])
+  }, [selectedPlace, persona, albumTracks, tourVibeChipUnion, refreshSaved])
 
   const isTourFavourited = useMemo(() => {
     if (!selectedPlace) return false
@@ -471,19 +513,31 @@ export default function App() {
     return shareLabelForSavedTour(hit)
   }, [selectedPlace, persona, savedList])
 
-  const handleDeleteAllHistory = useCallback(async () => {
-    const count = savedList.filter((r) => !r.favourited).length
-    if (count === 0) return
-    if (
-      !window.confirm(
-        `Remove all ${count} saved tour${count === 1 ? '' : 's'} from this device? Favourites will stay.`,
-      )
-    ) {
+  const openClearHistoryModal = useCallback(() => {
+    if (!savedList.some((r) => !r.favourited)) return
+    setClearHistoryFavouritesToo(false)
+    setClearHistoryOpen(true)
+  }, [savedList])
+
+  const closeClearHistoryModal = useCallback(() => {
+    setClearHistoryOpen(false)
+    setClearHistoryFavouritesToo(false)
+  }, [])
+
+  const confirmClearHistory = useCallback(async () => {
+    const nonFav = savedList.filter((r) => !r.favourited).length
+    if (nonFav === 0) {
+      closeClearHistoryModal()
       return
     }
-    await deleteAllNonFavouritedTours()
+    if (clearHistoryFavouritesToo) {
+      await deleteAllSavedTours()
+    } else {
+      await deleteAllNonFavouritedTours()
+    }
+    closeClearHistoryModal()
     await refreshSaved()
-  }, [savedList, refreshSaved])
+  }, [savedList, clearHistoryFavouritesToo, closeClearHistoryModal, refreshSaved])
 
   const handleDeleteCurrentSavedTour = useCallback(async () => {
     if (!selectedPlace) return
@@ -526,10 +580,14 @@ export default function App() {
 
   const feelingLucky = useCallback(() => {
     const pick = pickRandomPlace(SUGGESTED_PLACES_POOL)
+    setVibeSelection([])
+    setTourVibeChipUnion([])
     setSelectedPlace(suggestedToSelected(pick))
   }, [])
 
   const onPickSuggested = useCallback((s: SuggestedPlace) => {
+    setVibeSelection([])
+    setTourVibeChipUnion([])
     setSelectedPlace(suggestedToSelected(s))
   }, [])
 
@@ -537,13 +595,41 @@ export default function App() {
     (id: PersonaId) => {
       primeAudioPlayback()
       setPersona(id)
-      advanceToPersonaBridge()
-      void startFullTour(id)
+      advanceToVibesSheet()
     },
-    [advanceToPersonaBridge, primeAudioPlayback, startFullTour],
+    [advanceToVibesSheet, primeAudioPlayback],
   )
 
+  const handleSwitchNarratorFromTour = useCallback(
+    async (id: PersonaId) => {
+      if (id === persona) return
+      await flushAutosaveTour()
+      cancelTourPrep()
+      primeAudioPlayback()
+      setPersona(id)
+      setTourVibeChipUnion(mergeVibeUnion([], vibeSelection))
+      advanceToPersonaBridge()
+      void startFullTour(id, vibesForApi(vibeSelection))
+    },
+    [
+      persona,
+      vibeSelection,
+      flushAutosaveTour,
+      cancelTourPrep,
+      primeAudioPlayback,
+      advanceToPersonaBridge,
+      startFullTour,
+    ],
+  )
+
+  const handleFindMoreStops = useCallback(async () => {
+    const snapshot = [...vibeSelection]
+    const ok = await appendMoreStops(vibesForApi(snapshot))
+    if (ok) setTourVibeChipUnion((prev) => mergeVibeUnion(prev, snapshot))
+  }, [appendMoreStops, vibeSelection])
+
   const personaHeadingRef = useRef<HTMLHeadingElement>(null)
+  const vibesHeadingRef = useRef<HTMLHeadingElement>(null)
   const bridgePlaceHeadingRef = useRef<HTMLHeadingElement>(null)
   const bridgeHeadingRef = useRef<HTMLHeadingElement>(null)
 
@@ -553,366 +639,532 @@ export default function App() {
       bridgePlaceHeadingRef.current?.focus(opts)
     } else if (step === 'persona') {
       personaHeadingRef.current?.focus(opts)
+    } else if (step === 'vibes') {
+      vibesHeadingRef.current?.focus(opts)
     } else if (step === 'bridge_persona') {
       bridgeHeadingRef.current?.focus(opts)
     }
   }, [step])
 
+  const homeChromeVisible = step === 'place'
+  const homeSwipeIndex = homePanelIndex(homePanel)
+  const favouritesPage = useMemo(
+    () => favouriteList.slice(0, favouritesVisibleCount),
+    [favouriteList, favouritesVisibleCount],
+  )
+  const visitedPage = useMemo(
+    () => savedList.slice(0, visitedVisibleCount),
+    [savedList, visitedVisibleCount],
+  )
+  const clearHistoryCounts = useMemo(() => {
+    const nonFav = savedList.filter((r) => !r.favourited).length
+    const fav = savedList.filter((r) => r.favourited).length
+    return { nonFav, fav }
+  }, [savedList])
+
   return (
     <div className="passerby-page">
       <main className="passerby-shell passerby-stack">
-        <div
-          className={`card-layer card-layer-back${overlayCoversPlace ? ' card-layer-back-dimmed' : ''}`}
-          aria-hidden={overlayCoversPlace}
-        >
-          <header className="passerby-header">
-            <p className="wordmark">elsewhere</p>
-            <p className="wordmark-tagline">An audio guide to everywhere.</p>
-          </header>
-
-          <section className="stack-section stack-section--location" aria-label="Location">
-            <PlacesSearch
-              key={mapsKey ?? 'no-key'}
-              apiKey={mapsKey}
-              reflectLabel={selectedPlace?.label}
-              onPlaceSelected={handleSearchSelect}
-            />
-
-            <div className="location-row">
-              <button
-                type="button"
-                className="link-location"
-                onClick={handleUseLocation}
-                disabled={geo.loading}
-              >
-                <MapPin className="icon-pin" size={14} strokeWidth={2} aria-hidden />
-                {geo.loading ? 'Getting location…' : 'Use my location'}
-              </button>
-              <button type="button" className="link-location" onClick={feelingLucky}>
-                <Dices size={14} strokeWidth={2} className="icon-pin" aria-hidden />
-                I&apos;m feeling lucky
-              </button>
-            </div>
-            {geo.error && (
-              <p className="field-hint field-hint-warn" role="alert">
-                {geo.error.message ||
-                  'Could not read your location. Check permissions.'}
-              </p>
-            )}
-          </section>
-
-          <section
-            className="stack-section stack-section--suggest"
-            aria-labelledby="suggest-heading"
+        <div className="home-stage">
+          <div
+            className={`card-layer card-layer-back home-shell-back${overlayCoversPlace ? ' card-layer-back-dimmed' : ''}`}
+            aria-hidden={overlayCoversPlace}
           >
-            <div className="section-head">
-              <h2 id="suggest-heading" className="section-label">
-                Or visit…
-              </h2>
-              <div className="section-head-actions">
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={shuffle}
-                  aria-label="Shuffle suggested places"
-                  title="Shuffle"
+            <div className="home-swipe-viewport">
+              <div
+                className="home-swipe-track"
+                style={{
+                  transform: `translateX(calc(-${homeSwipeIndex} * 100% / 3))`,
+                }}
+              >
+                <div
+                  id="home-panel-favourites"
+                  role="tabpanel"
+                  aria-labelledby="home-tab-favourites"
+                  aria-hidden={homePanel !== 'favourites'}
+                  className="home-panel home-panel--saved"
                 >
-                  <Shuffle size={16} strokeWidth={2} aria-hidden />
-                </button>
-              </div>
-            </div>
-
-            <div className="suggest-carousel-wrap">
-              <div className="suggest-carousel" role="list">
-                {suggestedVisible.map((s) => {
-                  const sel =
-                    selectedPlace &&
-                    placeKey(suggestedToSelected(s)) === selectedKey
-                  return (
-                    <SuggestedPlaceCardButton
-                      key={`${s.id}-${s.coverSrc ?? ''}`}
-                      place={s}
-                      selected={!!sel}
-                      onPick={() => onPickSuggested(s)}
-                    />
-                  )
-                })}
-              </div>
-            </div>
-          </section>
-
-          {favouriteList.length > 0 ? (
-            <section className="stack-section stack-section--saved" aria-labelledby="favourites-heading">
-              <h2 id="favourites-heading" className="section-label">
-                Favourites
-              </h2>
-              <ul className="tour-stops-list tour-stops-list--timeline tour-stops-list--saved-home">
-                {favouriteList.map((row, si) => {
-                  const nar = PERSONAS.find((p) => p.id === row.persona)?.label ?? row.persona
-                  const menuOpen = savedMenuId === row.id
-                  const nTracks = row.tracks.length
-                  const placeTitle = shortenSavedPlaceTitle(shareLabelForSavedTour(row))
-                  const openTour = () => {
-                    setSavedMenuId(null)
-                    setSelectedPlace(row.place)
-                    setPersona(row.persona)
-                    restoreAlbumFromTracks(albumTracksFromSaved(row))
-                    enterTourFromLibrary()
-                  }
-                  return (
-                    <li key={row.id} className="tour-stop-row">
-                      <button type="button" className="tour-stop-dot-btn" aria-label="Open saved tour" onClick={openTour}>
-                        <span className="tour-stop-dot-inner">{si + 1}</span>
+                  <header className="home-saved-header">
+                    <button
+                      type="button"
+                      className="home-wordmark-btn"
+                      onClick={() => setHomePanel('discover')}
+                      aria-label="Back to discover"
+                    >
+                      <span className="wordmark home-wordmark-saved">elsewhere</span>
+                    </button>
+                    <p id="home-panel-favourites-subtitle" className="wordmark-tagline home-saved-kicker">
+                      Favourite places
+                    </p>
+                  </header>
+                  <div className="home-panel-scroll">
+                    {favouriteList.length === 0 ? (
+                      <div className="home-feed-empty">
+                        <p className="home-feed-empty-title">No favourites yet</p>
+                        <p className="home-feed-empty-sub">Save a tour from the player to see it here.</p>
+                        <button type="button" className="home-feed-empty-cta" onClick={() => setHomePanel('discover')}>
+                          Search a place
+                        </button>
+                      </div>
+                    ) : (
+                      <ul className="home-feed home-feed--cards" role="list">
+                        {favouritesPage.map((row) => {
+                          const personaMeta = PERSONAS.find((p) => p.id === row.persona)
+                          const nar = personaMeta?.label ?? row.persona
+                          const portraitSrc = personaMeta?.portraitSrc ?? PERSONAS[0]!.portraitSrc
+                          const menuOpen = savedMenuId === row.id
+                          const nTracks = row.tracks.length
+                          const placeTitle = shortenSavedPlaceTitle(shareLabelForSavedTour(row))
+                          const openTour = () => {
+                            setSavedMenuId(null)
+                            setVibeSelection(row.vibeIds ?? [])
+                            setTourVibeChipUnion(row.vibeIds ?? [])
+                            setSelectedPlace(row.place)
+                            setPersona(row.persona)
+                            restoreAlbumFromTracks(albumTracksFromSaved(row), row.persona)
+                            enterTourFromLibrary()
+                          }
+                          return (
+                            <li
+                              key={row.id}
+                              className={`home-feed-row${menuOpen ? ' home-feed-row--menu-open' : ''}`}
+                              role="listitem"
+                            >
+                              <div className="home-feed-card" data-saved-card={row.id}>
+                                <button type="button" className="home-feed-card__main" onClick={openTour}>
+                                  <span className="home-feed-card__title">{placeTitle}</span>
+                                  <span className="home-feed-card__meta">
+                                    <span className="home-feed-card__meta-line">
+                                      {nTracks} {nTracks === 1 ? 'track' : 'tracks'} · Narrated by{' '}
+                                      <PersonaAvatar portraitSrc={portraitSrc} className="home-feed-card__avatar" alt="" />
+                                      <span className="home-feed-card__nar">{nar}</span>
+                                      {row.vibeIds?.length ? (
+                                        <VibeEmojiOverlap vibeIds={row.vibeIds} className="home-feed-card__vibes" />
+                                      ) : null}
+                                    </span>
+                                  </span>
+                                </button>
+                                <div className="home-feed-card__actions">
+                                  <button
+                                    type="button"
+                                    className="home-feed-card__iconbtn home-feed-card__iconbtn--heart"
+                                    aria-label="Favourite actions"
+                                    aria-expanded={menuOpen}
+                                    aria-haspopup="menu"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setSavedMenuId(menuOpen ? null : row.id)
+                                    }}
+                                  >
+                                    <Heart size={15} strokeWidth={2} fill="currentColor" aria-hidden />
+                                  </button>
+                                  {menuOpen ? (
+                                    <div className="tour-player-popover home-popover" role="menu">
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="tour-player-popover-item"
+                                        onClick={async () => {
+                                          setSavedMenuId(null)
+                                          await updateSavedTourFavourite(row.id, false)
+                                          await refreshSaved()
+                                        }}
+                                      >
+                                        <Heart size={16} strokeWidth={2} aria-hidden />
+                                        <span>Unfavourite</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="tour-player-popover-item"
+                                        onClick={() => openRenameSaved(row)}
+                                      >
+                                        <Pencil size={16} strokeWidth={2} aria-hidden />
+                                        <span>Rename</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="tour-player-popover-item"
+                                        onClick={async () => {
+                                          const ok = await handleShareTourForSaved(row)
+                                          if (ok) setSavedShareOkId(row.id)
+                                        }}
+                                      >
+                                        {savedShareOkId === row.id ? (
+                                          <Check size={16} strokeWidth={2} aria-hidden />
+                                        ) : (
+                                          <Share2 size={16} strokeWidth={2} aria-hidden />
+                                        )}
+                                        <span>{savedShareOkId === row.id ? 'Link copied' : 'Share'}</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="tour-player-popover-item tour-player-popover-item--danger"
+                                        onClick={async () => {
+                                          setSavedMenuId(null)
+                                          await deleteSavedTour(row.id)
+                                          await refreshSaved()
+                                        }}
+                                      >
+                                        <Trash2 size={16} strokeWidth={2} aria-hidden />
+                                        <span>Delete</span>
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                    {favouriteList.length > 0 && favouritesVisibleCount < favouriteList.length ? (
+                      <button
+                        type="button"
+                        className="home-feed-loadmore"
+                        onClick={() =>
+                          setFavouritesVisibleCount((c) => Math.min(c + 5, favouriteList.length))
+                        }
+                      >
+                        Load more
                       </button>
-                      <div className="tour-stop-card tour-stop-card--saved-home" data-saved-card={row.id}>
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          className="tour-stop-card-body tour-stop-card-body--grow"
-                          onClick={openTour}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault()
-                              openTour()
-                            }
-                          }}
+                    ) : null}
+                  </div>
+                </div>
+
+                <div
+                  id="home-panel-discover"
+                  role="tabpanel"
+                  aria-labelledby="home-tab-discover"
+                  aria-hidden={homePanel !== 'discover'}
+                  className="home-panel home-panel--discover"
+                >
+                  <div className="home-discover-inner">
+                    <header className="home-discover-brand">
+                      <p className="wordmark">elsewhere</p>
+                      <p className="wordmark-tagline">An audio guide to everywhere.</p>
+                    </header>
+                    <section className="stack-section stack-section--location" aria-label="Location">
+                      <PlacesSearch
+                        key={mapsKey ?? 'no-key'}
+                        apiKey={mapsKey}
+                        reflectLabel={selectedPlace?.label}
+                        onPlaceSelected={handleSearchSelect}
+                      />
+
+                      <div className="location-row">
+                        <button
+                          type="button"
+                          className="link-location"
+                          onClick={handleUseLocation}
+                          disabled={geo.loading}
                         >
-                          <h3 className="tour-stop-name">{placeTitle}</h3>
-                          <p className="tour-stop-card-saved-meta">
-                            {nTracks} {nTracks === 1 ? 'track' : 'tracks'} · Narrated by {nar}
-                          </p>
-                        </div>
-                        <div className="tour-stop-card-menu">
-                          <button
-                            type="button"
-                            className="drawer-round-btn tour-stop-card-kebab tour-stop-card-kebab--favourited"
-                            aria-label="Saved tour actions"
-                            aria-expanded={menuOpen}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setSavedMenuId(menuOpen ? null : row.id)
-                            }}
-                          >
-                            <Heart size={18} strokeWidth={2} fill="currentColor" aria-hidden />
-                          </button>
-                          {menuOpen ? (
-                            <div className="tour-player-popover tour-player-popover--anchored" role="menu">
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="tour-player-popover-item"
-                                onClick={async () => {
-                                  setSavedMenuId(null)
-                                  await updateSavedTourFavourite(row.id, false)
-                                  await refreshSaved()
-                                }}
-                              >
-                                <Heart size={16} strokeWidth={2} aria-hidden />
-                                <span>Unfavourite</span>
-                              </button>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="tour-player-popover-item"
-                                onClick={() => openRenameSaved(row)}
-                              >
-                                <Pencil size={16} strokeWidth={2} aria-hidden />
-                                <span>Rename</span>
-                              </button>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="tour-player-popover-item"
-                                onClick={async () => {
-                                  const ok = await handleShareTourForSaved(row)
-                                  if (ok) setSavedShareOkId(row.id)
-                                }}
-                              >
-                                {savedShareOkId === row.id ? (
-                                  <Check size={16} strokeWidth={2} aria-hidden />
-                                ) : (
-                                  <Share2 size={16} strokeWidth={2} aria-hidden />
-                                )}
-                                <span>{savedShareOkId === row.id ? 'Link copied' : 'Share'}</span>
-                              </button>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="tour-player-popover-item tour-player-popover-item--danger"
-                                onClick={async () => {
-                                  setSavedMenuId(null)
-                                  await deleteSavedTour(row.id)
-                                  await refreshSaved()
-                                }}
-                              >
-                                <Trash2 size={16} strokeWidth={2} aria-hidden />
-                                <span>Delete</span>
-                              </button>
-                            </div>
-                          ) : null}
+                          <MapPin className="icon-pin" size={14} strokeWidth={2} aria-hidden />
+                          {geo.loading ? 'Getting location…' : 'Use my location'}
+                        </button>
+                        <button type="button" className="link-location" onClick={feelingLucky}>
+                          <Dices size={14} strokeWidth={2} className="icon-pin" aria-hidden />
+                          I&apos;m feeling lucky
+                        </button>
+                      </div>
+                      {geo.error ? (
+                        <p className="field-hint field-hint-warn" role="alert">
+                          {geo.error.message ||
+                            'Could not read your location. Check permissions.'}
+                        </p>
+                      ) : null}
+                    </section>
+
+                    <div className="home-suggest-row">
+                      <div className="suggest-carousel-wrap home-suggest-carousel">
+                        <div className="suggest-carousel" role="list">
+                          {suggestedVisible.map((s) => {
+                            const sel =
+                              selectedPlace && placeKey(suggestedToSelected(s)) === selectedKey
+                            return (
+                              <SuggestedPlaceCardButton
+                                key={`${s.id}-${s.coverSrc ?? ''}`}
+                                place={s}
+                                selected={!!sel}
+                                onPick={() => onPickSuggested(s)}
+                              />
+                            )
+                          })}
                         </div>
                       </div>
-                    </li>
-                  )
-                })}
-              </ul>
-            </section>
-          ) : null}
+                      <button
+                        type="button"
+                        className="home-shuffle-btn"
+                        onClick={shuffle}
+                        aria-label="Shuffle suggested places"
+                        title="Shuffle"
+                      >
+                        <Shuffle size={18} strokeWidth={2} aria-hidden />
+                      </button>
+                    </div>
+                  </div>
+                </div>
 
-          {historyList.length > 0 ? (
-            <section className="stack-section stack-section--saved" aria-labelledby="saved-heading">
-              <div className="section-head section-head--saved-history">
-                <h2 id="saved-heading" className="section-label">
-                  Take me back…
-                </h2>
-                <div className="section-head-actions">
-                  <button
-                    type="button"
-                    className="saved-delete-all-btn"
-                    onClick={() => void handleDeleteAllHistory()}
-                  >
-                    Delete all
-                  </button>
+                <div
+                  id="home-panel-visited"
+                  role="tabpanel"
+                  aria-labelledby="home-tab-visited"
+                  aria-hidden={homePanel !== 'visited'}
+                  className="home-panel home-panel--saved"
+                >
+                  <header className="home-saved-header">
+                    <button
+                      type="button"
+                      className="home-wordmark-btn"
+                      onClick={() => setHomePanel('discover')}
+                      aria-label="Back to discover"
+                    >
+                      <span className="wordmark home-wordmark-saved">elsewhere</span>
+                    </button>
+                    <div className="home-saved-header__end">
+                      <p id="home-panel-visited-subtitle" className="wordmark-tagline home-saved-kicker">
+                        Take me back…
+                      </p>
+                      {savedList.some((r) => !r.favourited) ? (
+                        <button
+                          type="button"
+                          className="home-header-clear-btn"
+                          onClick={openClearHistoryModal}
+                          aria-label="Clear saved tour history"
+                          title="Clear history"
+                        >
+                          <Trash2 size={18} strokeWidth={2} aria-hidden />
+                        </button>
+                      ) : null}
+                    </div>
+                  </header>
+                  <div className="home-panel-scroll">
+                    {savedList.length === 0 ? (
+                      <div className="home-feed-empty">
+                        <p className="home-feed-empty-title">No visits yet</p>
+                        <p className="home-feed-empty-sub">Tours you listen to will show up here.</p>
+                        <button type="button" className="home-feed-empty-cta" onClick={() => setHomePanel('discover')}>
+                          Search a place
+                        </button>
+                      </div>
+                    ) : (
+                      <ul className="home-feed home-feed--cards" role="list">
+                        {visitedPage.map((row) => {
+                          const personaMeta = PERSONAS.find((p) => p.id === row.persona)
+                          const nar = personaMeta?.label ?? row.persona
+                          const portraitSrc = personaMeta?.portraitSrc ?? PERSONAS[0]!.portraitSrc
+                          const menuOpen = savedMenuId === row.id
+                          const nTracks = row.tracks.length
+                          const placeTitle = shortenSavedPlaceTitle(shareLabelForSavedTour(row))
+                          const openTour = () => {
+                            setSavedMenuId(null)
+                            setVibeSelection(row.vibeIds ?? [])
+                            setTourVibeChipUnion(row.vibeIds ?? [])
+                            setSelectedPlace(row.place)
+                            setPersona(row.persona)
+                            restoreAlbumFromTracks(albumTracksFromSaved(row), row.persona)
+                            enterTourFromLibrary()
+                          }
+                          return (
+                            <li
+                              key={row.id}
+                              className={`home-feed-row${menuOpen ? ' home-feed-row--menu-open' : ''}`}
+                              role="listitem"
+                            >
+                              <div className="home-feed-card" data-saved-card={row.id}>
+                                <button type="button" className="home-feed-card__main" onClick={openTour}>
+                                  <span className="home-feed-card__title">{placeTitle}</span>
+                                  <span className="home-feed-card__meta">
+                                    <span className="home-feed-card__meta-line">
+                                      {nTracks} {nTracks === 1 ? 'track' : 'tracks'} · Narrated by{' '}
+                                      <PersonaAvatar portraitSrc={portraitSrc} className="home-feed-card__avatar" alt="" />
+                                      <span className="home-feed-card__nar">{nar}</span>
+                                      {row.vibeIds?.length ? (
+                                        <VibeEmojiOverlap vibeIds={row.vibeIds} className="home-feed-card__vibes" />
+                                      ) : null}
+                                    </span>
+                                  </span>
+                                </button>
+                                <div className="home-feed-card__actions">
+                                  <button
+                                    type="button"
+                                    className="home-feed-card__iconbtn"
+                                    aria-label="Saved tour actions"
+                                    aria-expanded={menuOpen}
+                                    aria-haspopup="menu"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setSavedMenuId(menuOpen ? null : row.id)
+                                    }}
+                                  >
+                                    <MoreVertical size={15} strokeWidth={2} aria-hidden />
+                                  </button>
+                                  {menuOpen ? (
+                                    <div className="tour-player-popover home-popover" role="menu">
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="tour-player-popover-item"
+                                        onClick={async () => {
+                                          setSavedMenuId(null)
+                                          await updateSavedTourFavourite(row.id, true)
+                                          await refreshSaved()
+                                        }}
+                                      >
+                                        <Heart size={16} strokeWidth={2} aria-hidden />
+                                        <span>Favourite</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="tour-player-popover-item"
+                                        onClick={() => openRenameSaved(row)}
+                                      >
+                                        <Pencil size={16} strokeWidth={2} aria-hidden />
+                                        <span>Rename</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="tour-player-popover-item"
+                                        onClick={async () => {
+                                          const ok = await handleShareTourForSaved(row)
+                                          if (ok) setSavedShareOkId(row.id)
+                                        }}
+                                      >
+                                        {savedShareOkId === row.id ? (
+                                          <Check size={16} strokeWidth={2} aria-hidden />
+                                        ) : (
+                                          <Share2 size={16} strokeWidth={2} aria-hidden />
+                                        )}
+                                        <span>{savedShareOkId === row.id ? 'Link copied' : 'Share'}</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        className="tour-player-popover-item tour-player-popover-item--danger"
+                                        onClick={async () => {
+                                          setSavedMenuId(null)
+                                          await deleteSavedTour(row.id)
+                                          await refreshSaved()
+                                        }}
+                                      >
+                                        <Trash2 size={16} strokeWidth={2} aria-hidden />
+                                        <span>Delete</span>
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                    {savedList.length > 0 && visitedVisibleCount < savedList.length ? (
+                      <button
+                        type="button"
+                        className="home-feed-loadmore"
+                        onClick={() => setVisitedVisibleCount((c) => Math.min(c + 5, savedList.length))}
+                      >
+                        Load more
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               </div>
-              <ul className="tour-stops-list tour-stops-list--timeline tour-stops-list--saved-home">
-                {historyList.map((row, si) => {
-                  const nar = PERSONAS.find((p) => p.id === row.persona)?.label ?? row.persona
-                  const menuOpen = savedMenuId === row.id
-                  const nTracks = row.tracks.length
-                  const placeTitle = shortenSavedPlaceTitle(shareLabelForSavedTour(row))
-                  const openTour = () => {
-                    setSavedMenuId(null)
-                    setSelectedPlace(row.place)
-                    setPersona(row.persona)
-                    restoreAlbumFromTracks(albumTracksFromSaved(row))
-                    enterTourFromLibrary()
-                  }
-                  return (
-                    <li key={row.id} className="tour-stop-row">
-                      <button type="button" className="tour-stop-dot-btn" aria-label="Open saved tour" onClick={openTour}>
-                        <span className="tour-stop-dot-inner">{si + 1}</span>
-                      </button>
-                      <div className="tour-stop-card tour-stop-card--saved-home" data-saved-card={row.id}>
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          className="tour-stop-card-body tour-stop-card-body--grow"
-                          onClick={openTour}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault()
-                              openTour()
-                            }
-                          }}
-                        >
-                          <h3 className="tour-stop-name">{placeTitle}</h3>
-                          <p className="tour-stop-card-saved-meta">
-                            {nTracks} {nTracks === 1 ? 'track' : 'tracks'} · Narrated by {nar}
-                          </p>
-                        </div>
-                        <div className="tour-stop-card-menu">
-                          <button
-                            type="button"
-                            className="drawer-round-btn tour-stop-card-kebab"
-                            aria-label="Saved tour actions"
-                            aria-expanded={menuOpen}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setSavedMenuId(menuOpen ? null : row.id)
-                            }}
-                          >
-                            <MoreVertical size={18} strokeWidth={2} aria-hidden />
-                          </button>
-                          {menuOpen ? (
-                            <div className="tour-player-popover tour-player-popover--anchored" role="menu">
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="tour-player-popover-item"
-                                onClick={async () => {
-                                  setSavedMenuId(null)
-                                  await updateSavedTourFavourite(row.id, true)
-                                  await refreshSaved()
-                                }}
-                              >
-                                <Heart size={16} strokeWidth={2} aria-hidden />
-                                <span>Favourite</span>
-                              </button>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="tour-player-popover-item"
-                                onClick={() => openRenameSaved(row)}
-                              >
-                                <Pencil size={16} strokeWidth={2} aria-hidden />
-                                <span>Rename</span>
-                              </button>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="tour-player-popover-item"
-                                onClick={async () => {
-                                  const ok = await handleShareTourForSaved(row)
-                                  if (ok) setSavedShareOkId(row.id)
-                                }}
-                              >
-                                {savedShareOkId === row.id ? (
-                                  <Check size={16} strokeWidth={2} aria-hidden />
-                                ) : (
-                                  <Share2 size={16} strokeWidth={2} aria-hidden />
-                                )}
-                                <span>{savedShareOkId === row.id ? 'Link copied' : 'Share'}</span>
-                              </button>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="tour-player-popover-item tour-player-popover-item--danger"
-                                onClick={async () => {
-                                  setSavedMenuId(null)
-                                  await deleteSavedTour(row.id)
-                                  await refreshSaved()
-                                }}
-                              >
-                                <Trash2 size={16} strokeWidth={2} aria-hidden />
-                                <span>Delete</span>
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    </li>
-                  )
-                })}
-              </ul>
-            </section>
-          ) : null}
+            </div>
+          </div>
         </div>
 
-        <footer className="passerby-footer">
-          <p className="passerby-footer-text">
-            Another silly little experiment from{' '}
-            <a
-              className="passerby-footer-link"
-              href="https://thedataface.com"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              DF Labs
-            </a>
-            {' · '}
-            <a
-              href="/privacy"
-              className="passerby-footer-link"
-              onClick={(e) => {
-                e.preventDefault()
-                nav.go('/privacy')
+        {homeChromeVisible ? (
+          <>
+            <nav
+              className="home-tabbar"
+              aria-label="Main"
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowLeft') {
+                  e.preventDefault()
+                  const i = homeSwipeIndex
+                  if (i > 0) setHomePanel(HOME_PANEL_ORDER[i - 1]!)
+                } else if (e.key === 'ArrowRight') {
+                  e.preventDefault()
+                  const i = homeSwipeIndex
+                  if (i < 2) setHomePanel(HOME_PANEL_ORDER[i + 1]!)
+                }
               }}
             >
-              Privacy
-            </a>
-          </p>
-        </footer>
+              <div className="home-tabbar-inner" role="tablist" aria-orientation="horizontal">
+                <button
+                  id="home-tab-favourites"
+                  type="button"
+                  role="tab"
+                  aria-label="Favourites"
+                  aria-selected={homePanel === 'favourites'}
+                  aria-controls="home-panel-favourites"
+                  tabIndex={homePanel === 'favourites' ? 0 : -1}
+                  className={`home-tab${homePanel === 'favourites' ? ' home-tab--active' : ''}`}
+                  onClick={() => setHomePanel('favourites')}
+                >
+                  <Heart size={26} strokeWidth={2} aria-hidden />
+                </button>
+                <button
+                  id="home-tab-discover"
+                  type="button"
+                  role="tab"
+                  aria-label="Discover"
+                  aria-selected={homePanel === 'discover'}
+                  aria-controls="home-panel-discover"
+                  tabIndex={homePanel === 'discover' ? 0 : -1}
+                  className={`home-tab${homePanel === 'discover' ? ' home-tab--active' : ''}`}
+                  onClick={() => setHomePanel('discover')}
+                >
+                  <Home size={26} strokeWidth={2} aria-hidden />
+                </button>
+                <button
+                  id="home-tab-visited"
+                  type="button"
+                  role="tab"
+                  aria-label="Previously visited"
+                  aria-selected={homePanel === 'visited'}
+                  aria-controls="home-panel-visited"
+                  tabIndex={homePanel === 'visited' ? 0 : -1}
+                  className={`home-tab${homePanel === 'visited' ? ' home-tab--active' : ''}`}
+                  onClick={() => setHomePanel('visited')}
+                >
+                  <History size={26} strokeWidth={2} aria-hidden />
+                </button>
+              </div>
+            </nav>
+
+            <footer className="passerby-footer">
+              <p className="passerby-footer-text">
+                Another silly little experiment from{' '}
+                <a
+                  className="passerby-footer-link"
+                  href="https://thedataface.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  DF Labs
+                </a>
+                {' · '}
+                <a
+                  href="/privacy"
+                  className="passerby-footer-link"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    nav.go('/privacy')
+                  }}
+                >
+                  Privacy
+                </a>
+              </p>
+            </footer>
+          </>
+        ) : null}
 
         {step === 'bridge_place' && (
           <OnboardingDrawer
@@ -965,13 +1217,73 @@ export default function App() {
                   type="button"
                   role="radio"
                   aria-checked={persona === p.id}
+                  aria-label={`${p.label}. ${p.subtitle}`}
                   className={`persona-card${persona === p.id ? ' persona-card-active' : ''}`}
                   disabled={tourBusy}
                   onClick={() => onPersonaPick(p.id)}
                 >
-                  <span className="persona-name">{p.label}</span>
+                  <span className="persona-card-avatar" aria-hidden>
+                    <PersonaAvatar portraitSrc={p.portraitSrc} className="persona-card-avatar-img" />
+                  </span>
+                  <span className="persona-card-text">
+                    <span className="persona-name">{p.label}</span>
+                    <span className="persona-sub">{p.subtitle}</span>
+                  </span>
                 </button>
               ))}
+            </div>
+          </OnboardingDrawer>
+        )}
+
+        {step === 'vibes' && (
+          <OnboardingDrawer
+            titleId="vibes-step-title"
+            onBack={goBack}
+            onRestart={restart}
+            bodyClassName="card-drawer-body--vibes"
+            footer={
+              <button
+                type="button"
+                className="vibes-sheet-cta"
+                disabled={tourBusy}
+                onClick={() => {
+                  primeAudioPlayback()
+                  setTourVibeChipUnion(mergeVibeUnion([], vibeSelection))
+                  advanceToPersonaBridge()
+                  void startFullTour(persona, vibesForApi(vibeSelection))
+                }}
+              >
+                Take me there →
+              </button>
+            }
+          >
+            <h2
+              id="vibes-step-title"
+              ref={vibesHeadingRef}
+              tabIndex={-1}
+              className="card-step-title"
+            >
+              Vibes?
+            </h2>
+            <p className="vibes-sheet-sub">What are you here for? Pick as many as you like.</p>
+            <div className="vibes-pill-grid" role="group" aria-labelledby="vibes-step-title">
+              {VIBES.map((v) => {
+                const selected = vibeSelection.includes(v.id)
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    className={`vibes-pill${selected ? ' vibes-pill--selected' : ''}`}
+                    aria-pressed={selected}
+                    onClick={() => setVibeSelection((prev) => toggleVibeSelection(prev, v.id))}
+                  >
+                    <span className="vibes-pill-emoji" aria-hidden>
+                      {v.emoji}
+                    </span>
+                    <span className="vibes-pill-label">{v.label}</span>
+                  </button>
+                )
+              })}
             </div>
           </OnboardingDrawer>
         )}
@@ -990,17 +1302,29 @@ export default function App() {
             >
               Preparing your tour…
             </h2>
-            {(scriptError || audioError) && (
+            {(scriptError || audioError || albumError) && (
               <p className="field-hint field-hint-warn" role="alert">
                 {scriptError ?? audioError ?? albumError}
               </p>
             )}
-            {!scriptError && !audioError ? (
-              <GenerationStatusTheater
-                scriptBusy={scriptBusy}
-                audioPhase={audioPhase}
-                secondariesRequestLoading={secondariesRequestLoading}
-              />
+            {audioError && albumTracks[0]?.scriptText?.trim() ? (
+              <button
+                type="button"
+                className="tour-player-audio-retry-btn bridge-persona-retry"
+                onClick={() => void retryCurrentTrackNarration()}
+              >
+                Try loading audio again
+              </button>
+            ) : null}
+            {!scriptError && !audioError && !albumError ? (
+              <div className="gen-loading-stack">
+                <GenerationStatusTheater
+                  scriptBusy={scriptBusy}
+                  audioPhase={audioPhase}
+                  secondariesRequestLoading={secondariesRequestLoading}
+                />
+                <LoadingDisclaimer key={persona} persona={persona} />
+              </div>
             ) : null}
           </OnboardingDrawer>
         )}
@@ -1015,6 +1339,7 @@ export default function App() {
             <TourPlayerSheet
               selectedPlace={selectedPlace}
               placeHeadingLabel={tourSheetHeadingLabel}
+              persona={persona}
               narratorLabel={PERSONAS.find((p) => p.id === persona)?.label ?? ''}
               scriptText={scriptText}
               scriptError={scriptError}
@@ -1027,8 +1352,8 @@ export default function App() {
               albumError={albumError}
               secondariesRequestLoading={secondariesRequestLoading}
               currentTrackIndex={currentTrackIndex}
-              onBack={goBack}
               onDismissTour={handleDismissTour}
+              onNarratorChange={handleSwitchNarratorFromTour}
               togglePlayPause={togglePlayPause}
               seekBy={seekBy}
               seekTo={seekTo}
@@ -1040,6 +1365,14 @@ export default function App() {
               onFavouriteToggle={() => void handleFavouriteToggleFromSheet()}
               hasSavedRecord={hasSavedRecordForTour}
               onDeleteSavedTour={handleDeleteCurrentSavedTour}
+              onRetryAudio={() => void retryCurrentTrackNarration()}
+              vibeSelection={vibeSelection}
+              onToggleVibe={(id) => setVibeSelection((prev) => toggleVibeSelection(prev, id))}
+              onFindMoreStops={() => void handleFindMoreStops()}
+              moreStopsLoading={moreStopsLoading}
+              moreStopsError={moreStopsError}
+              lastAppendedStopIds={lastAppendedStopIds}
+              vibeIds={tourVibeChipUnion}
             />
           </div>
         )}
@@ -1090,6 +1423,73 @@ export default function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {clearHistoryOpen ? (
+        <div
+          className="rename-place-backdrop"
+          role="presentation"
+          onPointerDown={(e) => {
+            if (e.target === e.currentTarget) closeClearHistoryModal()
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={clearHistoryTitleId}
+            className="rename-place-dialog clear-history-dialog"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <h2 id={clearHistoryTitleId} className="rename-place-title">
+              Clear saved tours
+            </h2>
+            <div className="clear-history-body">
+              <p className="clear-history-lead">
+                {clearHistoryCounts.nonFav === 1 ? (
+                  <>
+                    This will remove <strong>1 saved tour</strong> that is not in your favourites from this device.
+                  </>
+                ) : (
+                  <>
+                    This will remove <strong>{clearHistoryCounts.nonFav} saved tours</strong> that are not in your
+                    favourites from this device.
+                  </>
+                )}{' '}
+                You cannot undo this.
+              </p>
+              {clearHistoryCounts.fav > 0 ? (
+                <label className="clear-history-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={clearHistoryFavouritesToo}
+                    onChange={(e) => setClearHistoryFavouritesToo(e.target.checked)}
+                  />
+                  <span>
+                    Also delete favourited places ({clearHistoryCounts.fav}{' '}
+                    {clearHistoryCounts.fav === 1 ? 'tour' : 'tours'})
+                  </span>
+                </label>
+              ) : null}
+              {clearHistoryFavouritesToo && clearHistoryCounts.fav > 0 ? (
+                <p className="clear-history-warn" role="status">
+                  All {clearHistoryCounts.nonFav + clearHistoryCounts.fav} saved tours will be removed.
+                </p>
+              ) : null}
+            </div>
+            <div className="rename-place-actions">
+              <button type="button" className="rename-place-btn rename-place-btn--ghost" onClick={closeClearHistoryModal}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rename-place-btn rename-place-btn--danger"
+                onClick={() => void confirmClearHistory()}
+              >
+                Clear tours
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
