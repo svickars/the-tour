@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { cleanScript } from '../src/lib/cleanScript.ts'
+import { cleanScript } from '../lib/cleanScript'
 
 const ELEVEN_BASE = 'https://api.elevenlabs.io/v1/text-to-speech' as const
 const MODEL_ID = 'eleven_multilingual_v2' as const
@@ -36,6 +36,17 @@ export default async function handler(
   req: VercelRequest,
   res: VercelResponse,
 ): Promise<void> {
+  try {
+    await handleTextToSpeech(req, res)
+  } catch (err) {
+    console.error('[api/text-to-speech]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Unexpected server error.' })
+    }
+  }
+}
+
+async function handleTextToSpeech(req: VercelRequest, res: VercelResponse): Promise<void> {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' })
     return
@@ -118,39 +129,27 @@ export default async function handler(
     return
   }
 
-  const reader = upstream.body?.getReader()
-  if (!reader) {
+  const contentType =
+    upstream.headers.get('content-type') || 'audio/mpeg; charset=binary'
+
+  let bytes: ArrayBuffer
+  try {
+    bytes = await upstream.arrayBuffer()
+  } catch {
+    res.status(502).json({ error: 'Could not read audio from ElevenLabs.' })
+    return
+  }
+
+  if (bytes.byteLength === 0) {
     res.status(502).json({ error: 'ElevenLabs returned an empty body.' })
     return
   }
 
-  const contentType =
-    upstream.headers.get('content-type') || 'audio/mpeg; charset=binary'
-
+  const buf = Buffer.from(bytes)
   res.writeHead(200, {
     'Content-Type': contentType,
     'Cache-Control': 'no-store',
+    'Content-Length': String(buf.length),
   })
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value && value.byteLength > 0) {
-        res.write(Buffer.from(value))
-      }
-    }
-  } catch {
-    if (!res.headersSent) {
-      res.status(502).json({ error: 'Stream interrupted.' })
-      return
-    }
-    try {
-      res.end()
-    } catch {
-      /* ignore */
-    }
-    return
-  }
-  res.end()
+  res.end(buf)
 }
