@@ -19,6 +19,23 @@ export type { AlbumTrack, SelectedPlace } from '../lib/tourTypes'
 
 type AudioPhase = 'idle' | 'loading' | 'playing'
 
+/** Tiny WAV used only to satisfy mobile “audio started from a tap” heuristics before long async TTS work. */
+const SILENT_WAV_DATA_URI =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAAAAAA=='
+
+function applyMobileAudioAttrs(a: HTMLAudioElement) {
+  a.preload = 'auto'
+  a.setAttribute('playsinline', '')
+  a.setAttribute('webkit-playsinline', '')
+}
+
+function isAutoplayPolicyBlock(err: unknown): boolean {
+  return (
+    err instanceof DOMException &&
+    (err.name === 'NotAllowedError' || err.name === 'SecurityError')
+  )
+}
+
 function attachAudioUiSync(
   audio: HTMLAudioElement,
   setCurrentTime: (t: number) => void,
@@ -130,6 +147,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
   const mainTtsStreamRef = useRef<MainStreamTts | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const detachAudioUiRef = useRef<(() => void) | null>(null)
+  const primingAudioRef = useRef<HTMLAudioElement | null>(null)
 
   const [audioPhase, setAudioPhase] = useState<AudioPhase>('idle')
   const audioPhaseRef = useRef<AudioPhase>('idle')
@@ -285,6 +303,35 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
 
   const prefetchBlocking = prefetchLoading || placeDetailsLoading
 
+  /**
+   * Call synchronously from the same pointer/tap handler that starts a tour. iOS Safari only
+   * allows `audio.play()` after long async work if playback was “opened” from that gesture.
+   */
+  const primeAudioPlayback = useCallback(() => {
+    try {
+      let a = primingAudioRef.current
+      if (!a) {
+        a = new Audio()
+        primingAudioRef.current = a
+      }
+      applyMobileAudioAttrs(a)
+      if (a.src !== SILENT_WAV_DATA_URI) {
+        a.src = SILENT_WAV_DATA_URI
+        a.load()
+      }
+      void a.play().then(() => {
+        try {
+          a.pause()
+          a.currentTime = 0
+        } catch {
+          /* ignore */
+        }
+      })
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
   const canGenerate =
     lat != null &&
     lng != null &&
@@ -302,6 +349,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
         return false
       }
       const audio = new Audio(url)
+      applyMobileAudioAttrs(audio)
       audioRef.current = audio
       detachAudioUiRef.current = attachAudioUiSync(
         audio,
@@ -326,7 +374,22 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
       }
       audio.addEventListener('play', markStarted, { once: true })
       setAudioPhase('playing')
-      await audio.play()
+      try {
+        await audio.play()
+      } catch (e) {
+        if (isAutoplayPolicyBlock(e)) {
+          releaseAudioResources()
+          setAudioPhase('idle')
+          setAudioError(
+            'This browser only allows audio right after you tap. Tap play to start.',
+          )
+          return false
+        }
+        setAudioError('Could not play audio in this browser.')
+        releaseAudioResources()
+        setAudioPhase('idle')
+        return false
+      }
       return true
     },
     [releaseAudioResources],
@@ -350,6 +413,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
       }
 
       const audio = new Audio()
+      applyMobileAudioAttrs(audio)
       audioRef.current = audio
 
       const markStartedOnce = () => {
@@ -436,8 +500,14 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
           setAudioPhase('playing')
           try {
             await audio.play()
-          } catch {
-            setAudioError('Could not play audio in this browser.')
+          } catch (e) {
+            if (isAutoplayPolicyBlock(e)) {
+              setAudioError(
+                'This browser only allows audio right after you tap. Tap play to start.',
+              )
+            } else {
+              setAudioError('Could not play audio in this browser.')
+            }
             releaseAudioResources()
             setAudioPhase('idle')
             return
@@ -996,6 +1066,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
     canGenerate,
     tourBusy,
     startFullTour,
+    primeAudioPlayback,
     stopTour,
     cancelTourPrep,
     scriptBusy,

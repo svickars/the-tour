@@ -241,6 +241,7 @@ export default function App() {
     canGenerate,
     tourBusy,
     startFullTour,
+    primeAudioPlayback,
     stopTour,
     cancelTourPrep,
     scriptBusy,
@@ -523,11 +524,12 @@ export default function App() {
 
   const onPersonaPick = useCallback(
     (id: PersonaId) => {
+      primeAudioPlayback()
       setPersona(id)
       advanceToPersonaBridge()
       void startFullTour(id)
     },
-    [advanceToPersonaBridge, startFullTour],
+    [advanceToPersonaBridge, primeAudioPlayback, startFullTour],
   )
 
   const personaHeadingRef = useRef<HTMLHeadingElement>(null)
