@@ -1,0 +1,31 @@
+.gen-theater {
+  min-height: 3.25rem;
+  margin-top: -0.45rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.gen-theater-line {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  text-align: left;
+  color: var(--text, #52525b);
+  max-width: 100%;
+}
+
+.gen-theater--wipe .gen-theater-line {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gen-theater--wipe .gen-theater-line {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
