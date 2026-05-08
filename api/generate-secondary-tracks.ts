@@ -1,11 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { parseVibeThemes, vibeThemesInstructionBlock } from './parseVibeThemes.js'
+import { buildSecondaryTracksSystemBlocks, type PersonaId } from './tourAuthoringPrompts.js'
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages' as const
 const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-4-6' as const
 const ANTHROPIC_VERSION = '2023-06-01' as const
-
-type PersonaId = 'deadpan' | 'enthusiastic' | 'haunted' | 'rick' | 'rosa' | 'gary' | 'thomas' | 'vega'
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null
@@ -240,6 +239,7 @@ export default async function handler(
 
   const vibeThemes = parseVibeThemes(body)
   const vibeBlock = vibeThemes?.length ? vibeThemesInstructionBlock(vibeThemes) : ''
+  const system = buildSecondaryTracksSystemBlocks(persona, vibeBlock)
 
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim()
   if (!apiKey) {
@@ -248,45 +248,6 @@ export default async function handler(
   }
 
   const model = process.env.ANTHROPIC_MODEL?.trim() || DEFAULT_CLAUDE_MODEL
-
-  const groundingRule =
-    persona === 'gary'
-      ? '- Use real candidate place names from the nearby list as each clip subject, but facts, dates, causes, and citations may be confidently invented or wrong—that is the persona. Do not invent street addresses or URLs not implied by context.'
-      : '- Scripts must be grounded in the provided nearby list / Wikipedia / place details. Do not invent addresses.'
-
-  const system = `You create SHORT secondary walking-tour audio scripts (companion clips to a main narration).
-
-Return ONLY a JSON array (no markdown fences, no commentary). Each element must be an object with:
-- "id": short kebab-case string unique in this array
-- "title": string (place name the clip is about)
-- "description": string, ONE short sentence (max ~140 characters) for a UI card — what a visitor would notice first; no spoilers from the script
-- "script": string (25–45 seconds spoken when read aloud; same persona/voice rules as main tour)
-- "lat": optional number (WGS84 latitude if you are confident)
-- "lng": optional number (WGS84 longitude if confident)
-- "mapsSearchQuery": optional string (Google Maps search query if lat/lng uncertain)
-- "googleMapsUrl": optional string (full https Google Maps URL; omit if you only have mapsSearchQuery)
-- "wikipediaArticleTitle": optional string (exact English Wikipedia article title if a clear article exists, e.g. "Times Square")
-- "wikipediaSearchQuery": optional string (only if no exact article title — search query for Wikipedia)
-- "includeWikipedia": optional boolean (default true). Set false only when there is genuinely no sensible Wikipedia topic for this stop
-- "rating": optional number (0–5) if you are inferring popularity from provided data only
-
-Rules:
-- Exactly 3 to 5 entries. Each must be a DISTINCT nearby place not identical to the main pin label.
-- If placeScope is "specific", pick human-scale neighbours (streets, small venues, stations) that match the anchor's weight.
-- If placeScope is "broad", pick iconic/high-signal stops a visitor might walk to nearby (landmarks, famous hotels, notable food).
-${groundingRule}
-- Same narrator persona as specified in the user message (${persona}).
-- Plain spoken words only for "script" — no stage directions, markdown, or meta.
-
-Persona texture:
-- deadpan: dry, precise, wry asides.
-- enthusiastic (Frankie): punchy jokes, hyperbole, one absurd comparison per clip, still truthful anchors.
-- haunted (Shiva): darker mood, brief ghost-story beats clearly moored to real names/facts from context; label invention as mood not history when needed.
-- rick (Rick): extra chill, laid-back bar energy; pile on "like", "whatever", "honestly", "friggin'", "freakin'" without forcing every line. Mild sarcasm, never mean. OK to skew darker or less rosy—rough reviews, sketchy blocks, the stop people love to hate—when context supports it; do not invent quotes or reviewer names. Short tangents, never tour-guide patter.
-- rosa (Rosa): warm, slow, emotional; beauty in ordinary details—food, light, smell, crowds. Wistful asides OK; phrases like "what I love about this place", "you have to understand". Never rushed; no invented reviewer names or long fake quotes.
-- gary (Gary): maximum bluff—fake journals, bogus symposia, invented scholars, self-contradiction ignored; still use real candidate titles from the list. "Historians have long debated", "little known fact", "as many of you will know", "famously of course". Earnest, never in on the joke; crank the pomposity.
-- thomas (Thomas): Victorian gentleman adrift in the present—long winding sentences, heavy anecdote load (expeditions, steamers, luncheons abroad), then pivot to the modern absurdity at hand. "I say", "upon my word", "most curious", "Hobson would have known"; address Hobson though he is absent. Architecture, civic order, pigeons as moral actors; baffled courtesy toward technology. Still use real candidate titles from the list.
-- vega (Vega / X-9): alien field report—flat affect, wrong-but-logical purpose guesses, "the subjects" / "biological units", "this unit has observed", "classification: unclear", occasional "recalibrating"; treat every stop with identical clinical fascination. Still use real candidate titles from the list.${vibeBlock}`
 
   const userLines = [
     `persona: ${persona}`,

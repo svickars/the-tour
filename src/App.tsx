@@ -23,6 +23,7 @@ import {
   Share2,
   Shuffle,
   Trash2,
+  X,
 } from 'lucide-react'
 import { GenerationStatusTheater } from './components/GenerationStatusTheater'
 import { LoadingDisclaimer } from './components/LoadingDisclaimer'
@@ -172,6 +173,20 @@ function DrawerRestartButton({ onClick }: { onClick: () => void }) {
   )
 }
 
+function DrawerCloseButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="drawer-round-btn drawer-close-btn"
+      onClick={onClick}
+      aria-label="Close"
+      title="Close"
+    >
+      <X size={20} strokeWidth={2} aria-hidden />
+    </button>
+  )
+}
+
 function BridgeLoadingIndicator() {
   return (
     <div className="bridge-loading" role="status" aria-label="Loading">
@@ -183,7 +198,10 @@ function BridgeLoadingIndicator() {
 type OnboardingDrawerProps = {
   titleId: string
   onBack: () => void
-  onRestart: () => void
+  /** First bridge only: full reset to discover. */
+  onRestart?: () => void
+  /** Persona / vibes / tour-prep sheets: close overlay without clearing the app. */
+  onCloseSheet?: () => void
   bodyClassName?: string
   footer?: ReactNode
   children: ReactNode
@@ -193,6 +211,7 @@ function OnboardingDrawer({
   titleId,
   onBack,
   onRestart,
+  onCloseSheet,
   bodyClassName,
   footer,
   children,
@@ -207,7 +226,11 @@ function OnboardingDrawer({
     >
       <header className="card-drawer-header">
         <CardBackButton onClick={onBack} />
-        <DrawerRestartButton onClick={onRestart} />
+        {onCloseSheet ? (
+          <DrawerCloseButton onClick={onCloseSheet} />
+        ) : onRestart ? (
+          <DrawerRestartButton onClick={onRestart} />
+        ) : null}
       </header>
       <div className={bodyCls}>{children}</div>
       {footer ? <div className="card-drawer-footer">{footer}</div> : null}
@@ -1194,7 +1217,7 @@ export default function App() {
           <OnboardingDrawer
             titleId="persona-step-title"
             onBack={goBack}
-            onRestart={restart}
+            onCloseSheet={handleDismissTour}
           >
             <h2
               id="persona-step-title"
@@ -1239,7 +1262,7 @@ export default function App() {
           <OnboardingDrawer
             titleId="vibes-step-title"
             onBack={goBack}
-            onRestart={restart}
+            onCloseSheet={handleDismissTour}
             bodyClassName="card-drawer-body--vibes"
             footer={
               <button
@@ -1292,7 +1315,7 @@ export default function App() {
           <OnboardingDrawer
             titleId="bridge-persona-title"
             onBack={goBack}
-            onRestart={restart}
+            onCloseSheet={handleDismissTour}
           >
             <h2
               id="bridge-persona-title"
