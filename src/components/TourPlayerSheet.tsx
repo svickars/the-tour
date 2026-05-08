@@ -36,6 +36,11 @@ function TourMiniPlayer({
 	scrubMax,
 	currentTime,
 	nowPlayingTitle,
+	canPrevTrack,
+	canNextTrack,
+	nextTrackBusy,
+	prevTrack,
+	nextTrack,
 	togglePlayPause,
 	setTab,
 }: {
@@ -45,6 +50,11 @@ function TourMiniPlayer({
 	scrubMax: number;
 	currentTime: number;
 	nowPlayingTitle: string;
+	canPrevTrack: boolean;
+	canNextTrack: boolean;
+	nextTrackBusy: boolean;
+	prevTrack: () => void | Promise<void>;
+	nextTrack: () => void | Promise<void>;
 	togglePlayPause: () => void;
 	setTab: (t: TabId) => void;
 }) {
@@ -52,6 +62,17 @@ function TourMiniPlayer({
 	const title = nowPlayingTitle.trim();
 	return (
 		<div className="tour-mini-player">
+			<button
+				type="button"
+				className="tour-mini-player-skip"
+				disabled={!canPrevTrack}
+				aria-label="Previous track"
+				onClick={(e) => {
+					e.stopPropagation();
+					void prevTrack();
+				}}>
+				<SkipBack size={20} strokeWidth={2} aria-hidden />
+			</button>
 			<button
 				type="button"
 				className="tour-mini-player-playbtn"
@@ -80,6 +101,21 @@ function TourMiniPlayer({
 						}}
 					/>
 				</span>
+			</button>
+			<button
+				type="button"
+				className="tour-mini-player-skip"
+				disabled={!canNextTrack}
+				aria-label="Next track"
+				onClick={(e) => {
+					e.stopPropagation();
+					void nextTrack();
+				}}>
+				{nextTrackBusy ? (
+					<Loader2 className="tour-mini-player-skip-spin" size={20} strokeWidth={2} aria-hidden />
+				) : (
+					<SkipForward size={20} strokeWidth={2} aria-hidden />
+				)}
 			</button>
 		</div>
 	);
@@ -140,6 +176,8 @@ export type TourPlayerSheetProps = {
 	/** Re-run TTS for the current stop after a preparation failure. */
 	onRetryAudio?: () => void | Promise<void>;
 	vibeSelection: VibeId[];
+	/** Vibes shown in player meta (saved tour union); may differ from `vibeSelection` while editing. */
+	vibeIds: VibeId[];
 	onToggleVibe: (id: VibeId) => void;
 	onFindMoreStops: () => void | Promise<void>;
 	moreStopsLoading: boolean;
@@ -294,6 +332,7 @@ export function TourPlayerSheet({
 
 	const canPrevTrack = currentTrackIndex > 0;
 	const canNextTrack = currentTrackIndex < albumTracks.length - 1;
+	const miniNextTrackBusy = canNextTrack && albumTracks[currentTrackIndex + 1]?.status !== 'ready';
 
 	const currentTrack = albumTracks[currentTrackIndex];
 	const nowPlayingTitle = currentTrack?.title?.trim() || 'This stop';
@@ -642,6 +681,11 @@ export function TourPlayerSheet({
 								scrubMax={scrubMax}
 								currentTime={currentTime}
 								nowPlayingTitle={nowPlayingTitle}
+								canPrevTrack={canPrevTrack}
+								canNextTrack={canNextTrack}
+								nextTrackBusy={miniNextTrackBusy}
+								prevTrack={prevTrack}
+								nextTrack={nextTrack}
 								togglePlayPause={togglePlayPause}
 								setTab={selectTab}
 							/>
@@ -815,6 +859,11 @@ export function TourPlayerSheet({
 							scrubMax={scrubMax}
 							currentTime={currentTime}
 							nowPlayingTitle={nowPlayingTitle}
+							canPrevTrack={canPrevTrack}
+							canNextTrack={canNextTrack}
+							nextTrackBusy={miniNextTrackBusy}
+							prevTrack={prevTrack}
+							nextTrack={nextTrack}
 							togglePlayPause={togglePlayPause}
 							setTab={selectTab}
 						/>

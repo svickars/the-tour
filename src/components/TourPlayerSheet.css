@@ -1052,6 +1052,53 @@
   background: var(--drawer-surface, #f3f2ef);
 }
 
+.tour-mini-player-skip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  color: var(--text-strong, #18181b);
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    transform 0.18s ease,
+    opacity 0.18s ease;
+}
+
+.tour-mini-player-skip:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.tour-mini-player-skip:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.tour-mini-player-skip:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.tour-mini-player-skip-spin {
+  animation: tour-spin 0.75s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-mini-player-skip-spin {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+.tour-mini-player-skip svg {
+  flex-shrink: 0;
+}
+
 .tour-mini-player-playbtn {
   flex-shrink: 0;
   width: 44px;
