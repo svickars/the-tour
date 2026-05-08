@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { parseVibeThemes, vibeThemesInstructionBlock } from './parseVibeThemes'
+import { parseVibeThemes, vibeThemesInstructionBlock } from './parseVibeThemes.js'
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages' as const
 /** `claude-sonnet-4-20250514` was deprecated; returns 404 when removed. Override with `ANTHROPIC_MODEL`. */

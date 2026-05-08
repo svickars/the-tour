@@ -2,7 +2,7 @@
  * Prepares tour script text for TTS: removes markdown headers, bracket/paren
  * asides, asterisks, all-caps “section title” lines, and extra whitespace.
  *
- * Keep in sync with `api/lib/cleanScript.ts` (Vercel serverless TTS bundle).
+ * Keep in sync with the inlined `cleanScript` in `api/text-to-speech.ts`.
  */
 export function cleanScript(text: string): string {
   const normalized = text.replace(/\r\n/g, '\n')

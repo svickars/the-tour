@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { parseVibeThemes, vibeThemesInstructionBlock } from './parseVibeThemes'
+import { parseVibeThemes, vibeThemesInstructionBlock } from './parseVibeThemes.js'
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages' as const
 const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-4-6' as const
