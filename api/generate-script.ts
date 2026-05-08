@@ -1,4 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { cleanScript } from './lib/cleanScript.js'
+import { normalizeHotspotsForCleanedScript } from './lib/transcriptHotspots.js'
 import { parseVibeThemes, vibeThemesInstructionBlock } from './parseVibeThemes.js'
 import {
   buildScriptGenerationSystem,
@@ -157,7 +159,33 @@ function buildUserContent(input: {
   }
   lines.push('')
   lines.push('Write the narration script now.')
+  lines.push('')
+  lines.push(
+    [
+      'After the spoken narration only, on a new line output exactly the token <<<ELSEWHERE_HOTSPOTS>>> then a newline, then a single JSON object (no markdown fences) on one line. Do not speak the token or JSON aloud.',
+      '',
+      'The JSON object must include:',
+      '- "hotspots": array (at most 10 items). Each item: id (string), kind one of wikipedia|places|inferred|persona|unknown, title (short), body (1–3 sentences for a reader), optional url (https only), excerpt (exact contiguous substring copied from your narration before the token; must still appear verbatim after cleaning: remove # lines, drop ALL-CAPS section lines, strip [...] and (...) asides and asterisks, trim lines). Use kind "persona" for deliberate invented facts in character.',
+      '- "placeTourTitle": string — the umbrella name for this tour in the app header and saved lists. If the anchor is a specific street address or small pin, use the neighbourhood or district name a visitor would recognise from the nearby list or primary place details (e.g. a borough plus area). If the anchor is already a city, famous square, landmark, or neighbourhood name people say aloud, keep that scale (e.g. "London", "Times Square", "Montmartre"). Do not invent geography not implied by the data.',
+      '- "mainStopTitle": string — the title for this first audio stop only. Prefer the visitor\'s exact search label when it is a specific address or named venue. If the narration clearly reframes around a larger area (city, quarter, park), use that as the stop title instead.',
+      '',
+      'Example shape: {"hotspots":[...],"placeTourTitle":"...","mainStopTitle":"..."}',
+    ].join('\n'),
+  )
   return lines.join('\n')
+}
+
+const HOTSPOT_MARKER = '<<<ELSEWHERE_HOTSPOTS>>>'
+
+function safePrefixBeforeHotspotMarker(full: string, marker: string): string {
+  const i = full.indexOf(marker)
+  if (i !== -1) return full.slice(0, i)
+  for (let hold = marker.length - 1; hold >= 1; hold--) {
+    if (full.length >= hold && marker.startsWith(full.slice(-hold))) {
+      return full.slice(0, full.length - hold)
+    }
+  }
+  return full
 }
 
 async function pipeAnthropicSseToNdjson(
@@ -169,6 +197,8 @@ async function pipeAnthropicSseToNdjson(
   const reader = stream.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let fullAssistant = ''
+  let emittedScriptLen = 0
 
   while (true) {
     const { done, value } = await reader.read()
@@ -194,7 +224,13 @@ async function pipeAnthropicSseToNdjson(
         if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
           const text = evt.delta.text
           if (typeof text === 'string' && text.length > 0) {
-            res.write(`${JSON.stringify({ t: text })}\n`)
+            fullAssistant += text
+            const safe = safePrefixBeforeHotspotMarker(fullAssistant, HOTSPOT_MARKER)
+            if (safe.length > emittedScriptLen) {
+              const chunk = safe.slice(emittedScriptLen)
+              res.write(`${JSON.stringify({ t: chunk })}\n`)
+              emittedScriptLen = safe.length
+            }
           }
         }
         if (evt.type === 'error') {
@@ -209,6 +245,42 @@ async function pipeAnthropicSseToNdjson(
       }
     }
   }
+
+  const spokenRaw = safePrefixBeforeHotspotMarker(fullAssistant, HOTSPOT_MARKER).trimEnd()
+  const tailIdx = fullAssistant.indexOf(HOTSPOT_MARKER)
+  let hotspotsRaw: unknown = []
+  let placeTourTitleOut: string | undefined
+  let mainStopTitleOut: string | undefined
+  if (tailIdx !== -1) {
+    const tail = fullAssistant.slice(tailIdx + HOTSPOT_MARKER.length).trim()
+    const lb = tail.indexOf('{')
+    const rb = tail.lastIndexOf('}')
+    if (lb !== -1 && rb > lb) {
+      try {
+        const j = JSON.parse(tail.slice(lb, rb + 1)) as {
+          hotspots?: unknown
+          placeTourTitle?: unknown
+          mainStopTitle?: unknown
+        }
+        hotspotsRaw = j.hotspots ?? []
+        if (typeof j.placeTourTitle === 'string' && j.placeTourTitle.trim()) {
+          placeTourTitleOut = j.placeTourTitle.trim().slice(0, 140)
+        }
+        if (typeof j.mainStopTitle === 'string' && j.mainStopTitle.trim()) {
+          mainStopTitleOut = j.mainStopTitle.trim().slice(0, 160)
+        }
+      } catch {
+        hotspotsRaw = []
+      }
+    }
+  }
+
+  const cleaned = cleanScript(spokenRaw)
+  const hotspots = normalizeHotspotsForCleanedScript(cleaned, hotspotsRaw)
+  const outPayload: Record<string, unknown> = { hotspots }
+  if (placeTourTitleOut) outPayload.placeTourTitle = placeTourTitleOut
+  if (mainStopTitleOut) outPayload.mainStopTitle = mainStopTitleOut
+  res.write(`${JSON.stringify(outPayload)}\n`)
 }
 
 export default async function handler(

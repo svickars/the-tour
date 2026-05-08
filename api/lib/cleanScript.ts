@@ -1,8 +1,6 @@
 /**
- * Prepares tour script text for TTS: removes markdown headers, bracket/paren
- * asides, asterisks, all-caps “section title” lines, and extra whitespace.
- *
- * Keep in sync with `api/lib/cleanScript.ts` and `api/text-to-speech.ts`.
+ * Same behaviour as `src/lib/cleanScript.ts`. Keep these files in sync.
+ * Used by script routes and `api/text-to-speech.ts`.
  */
 export function cleanScript(text: string): string {
   const normalized = text.replace(/\r\n/g, '\n')
@@ -28,7 +26,6 @@ export function cleanScript(text: string): string {
     .trim()
 }
 
-/** Lines that look like ALL-CAPS section headings (not short shouts). */
 function isAllCapsSectionTitle(line: string): boolean {
   const t = line.trim()
   if (t.length < 8) return false

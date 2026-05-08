@@ -843,11 +843,84 @@
 	border: 0;
 }
 
-/* Full tour player (replaces generic drawer chrome for step 3) */
-.tour-player-drawer.card-layer-front {
-	padding: calc(1.25rem + env(safe-area-inset-top, 0px)) 1.25rem calc(1rem + env(safe-area-inset-bottom, 0px));
-	/* Let narrator / overflow menus paint past the sheet chrome; inner panels still clip long content. */
+/*
+ * Tour player: outer anchor = fixed positioning + horizontal center + hotspot dim scale (whole sheet).
+ * Inner chrome = background, radius, shadow, padding + slide-up animation (translateY only so it does not fight the anchor’s translateX).
+ */
+.tour-player-drawer-anchor {
+	position: fixed;
+	left: 50%;
+	right: auto;
+	bottom: 0;
+	top: auto;
+	z-index: 4;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	width: var(--page-sheet-max, min(calc(22.5rem + 2.5rem), 100%));
+	max-width: 100%;
+	box-sizing: border-box;
+	max-height: 80vh;
+	max-height: 80dvh;
+	height: auto;
+	transform: translateX(-50%);
+	transform-origin: 50% 100%;
+	transition:
+		transform 0.38s cubic-bezier(0.22, 1, 0.36, 1),
+		opacity 0.32s ease;
+}
+
+.tour-player-drawer-anchor--dimmed {
+	transform: translateX(-50%) scale(0.96);
+	opacity: 0.88;
+	pointer-events: none;
+}
+
+.tour-player-drawer-chrome {
+	flex: 1;
+	min-height: 0;
+	width: 100%;
+	display: flex;
+	flex-direction: column;
 	overflow: visible;
+	border-radius: 24px 24px 0 0;
+	background: var(--drawer-surface, #f3f2ef);
+	box-shadow: 0 -12px 44px rgba(15, 15, 20, 0.12);
+	border: 1px solid var(--drawer-edge, rgba(24, 24, 27, 0.07));
+	border-bottom: none;
+	padding: calc(1.25rem + env(safe-area-inset-top, 0px)) 1.25rem calc(1rem + env(safe-area-inset-bottom, 0px));
+}
+
+.tour-player-drawer-chrome--animate {
+	animation: tour-player-drawer-chrome-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes tour-player-drawer-chrome-in {
+	from {
+		transform: translateY(100%);
+		opacity: 0;
+	}
+
+	to {
+		transform: translateY(0);
+		opacity: 1;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tour-player-drawer-anchor {
+		transition: opacity 0.22s ease;
+	}
+
+	.tour-player-drawer-anchor--dimmed {
+		transform: translateX(-50%);
+		opacity: 0.9;
+	}
+
+	.tour-player-drawer-chrome--animate {
+		animation: none;
+		opacity: 1;
+	}
 }
 
 .bridge-loading {

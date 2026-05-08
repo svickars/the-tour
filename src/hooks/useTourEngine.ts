@@ -14,6 +14,7 @@ import { userFacingAudioErrorMessage } from '../lib/sanitizeAudioError'
 import { inferPlaceScope } from '../lib/placeScope'
 import { orderSecondariesForWalk } from '../lib/walkingOrder'
 import type { AlbumTrack, AlbumTrackStatus, SelectedPlace } from '../lib/tourTypes'
+import type { TranscriptHotspot } from '../lib/transcriptHotspots'
 import { wikipediaArticleUrl, wikipediaSearchUrl } from '../lib/wikipediaLinks'
 
 export type { AlbumTrack, SelectedPlace } from '../lib/tourTypes'
@@ -133,6 +134,8 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
   const [scriptText, setScriptText] = useState('')
   const [scriptBusy, setScriptBusy] = useState(false)
   const [scriptError, setScriptError] = useState<string | null>(null)
+  /** Model-suggested umbrella place label for header/lists (persisted as `tourListLabel`). */
+  const [tourListLabel, setTourListLabel] = useState<string | null>(null)
 
   const [albumTracks, setAlbumTracks] = useState<AlbumTrack[]>([])
   const [albumError, setAlbumError] = useState<string | null>(null)
@@ -300,6 +303,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
     stopTour()
     setScriptBusy(false)
     setScriptText('')
+    setTourListLabel(null)
     setSecondariesRequestLoading(false)
     setMoreStopsLoading(false)
     setMoreStopsError(null)
@@ -514,6 +518,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
             googleMapsUrl?: string
             wikipediaUrl?: string
             rating?: number
+            hotspots?: TranscriptHotspot[]
           }[]
         }
         const raw = Array.isArray(j.tracks) ? j.tracks : []
@@ -524,6 +529,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
           orderIndex: i + 1,
           status: 'queued' as AlbumTrackStatus,
           scriptText: row.script,
+          hotspots: row.hotspots,
           mapsSearchQuery: row.mapsSearchQuery,
           googleMapsUrl:
             row.googleMapsUrl?.trim() ||
@@ -615,6 +621,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
             googleMapsUrl?: string
             wikipediaUrl?: string
             rating?: number
+            hotspots?: TranscriptHotspot[]
           }[]
         }
         const raw = Array.isArray(j.tracks) ? j.tracks : []
@@ -628,6 +635,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
           orderIndex: 0,
           status: 'queued' as AlbumTrackStatus,
           scriptText: row.script,
+          hotspots: row.hotspots,
           mapsSearchQuery: row.mapsSearchQuery,
           googleMapsUrl:
             row.googleMapsUrl?.trim() ||
@@ -711,12 +719,15 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
 
       setScriptText('')
       setScriptBusy(true)
+      setTourListLabel(null)
 
       const placesPayload = nearby?.ok === true ? nearby.places : []
       const wikiTitle = wiki?.ok === true ? wiki.title : ''
       const wikiExtract = wiki?.ok === true ? wiki.extract : ''
 
       let accumulated = ''
+      let mainHotspots: TranscriptHotspot[] = []
+      let streamedMainStopTitle: string | undefined
 
       try {
         const scriptBody: Record<string, unknown> = {
@@ -772,11 +783,26 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
             carry = carry.slice(nl + 1)
             if (!line) continue
             try {
-              const o = JSON.parse(line) as { t?: string; error?: string }
+              const o = JSON.parse(line) as {
+                t?: string
+                error?: string
+                hotspots?: TranscriptHotspot[]
+                placeTourTitle?: string
+                mainStopTitle?: string
+              }
               if (typeof o.error === 'string' && o.error.trim()) {
                 mainTtsStreamRef.current = null
                 setScriptError(o.error.trim())
                 return
+              }
+              if (typeof o.placeTourTitle === 'string' && o.placeTourTitle.trim()) {
+                setTourListLabel(o.placeTourTitle.trim().slice(0, 140))
+              }
+              if (typeof o.mainStopTitle === 'string' && o.mainStopTitle.trim()) {
+                streamedMainStopTitle = o.mainStopTitle.trim().slice(0, 160)
+              }
+              if (Array.isArray(o.hotspots)) {
+                mainHotspots = o.hotspots
               }
               if (typeof o.t === 'string' && o.t.length > 0) {
                 accumulated += o.t
@@ -841,6 +867,10 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
         return
       }
 
+      const cleanedMain = cleanScript(fullScript)
+      const mainHotspotsOut = mainHotspots.length > 0 ? mainHotspots : undefined
+      setScriptText(cleanedMain)
+
       const st = mainTtsStreamRef.current
       mainTtsStreamRef.current = null
 
@@ -855,16 +885,20 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
           ? wikipediaArticleUrl(wiki.title)
           : wikipediaSearchUrl(selectedPlace?.label?.trim() || mainMapsQuery)
 
+      const mainTitle =
+        streamedMainStopTitle?.trim() || selectedPlace?.label?.trim() || 'This stop'
+
       albumNarratorPersonaRef.current = voicePersona
 
       setAlbumTracks([
         {
           id: mainId,
-          title: selectedPlace?.label ?? 'This stop',
-          description: mainTrackDescriptionFromScript(fullScript),
+          title: mainTitle,
+          description: mainTrackDescriptionFromScript(cleanedMain),
           orderIndex: 0,
           status: 'queued',
-          scriptText: fullScript,
+          scriptText: cleanedMain,
+          hotspots: mainHotspotsOut,
           mapsSearchQuery: mainMapsQuery,
           googleMapsUrl: mainGoogle,
           wikipediaUrl: mainWiki,
@@ -873,7 +907,7 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
       ])
 
       void (async () => {
-        const secs = await fetchSecondaries(fullScript, listAc.signal, voicePersona, vibeThemes)
+        const secs = await fetchSecondaries(cleanedMain, listAc.signal, voicePersona, vibeThemes)
         if (listAc.signal.aborted) return
         setAlbumTracks((prev) => {
           const main = prev[0]
@@ -1138,27 +1172,39 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
     }
   }, [audioPhase, restartAudioFromStart])
 
-  const restoreAlbumFromTracks = useCallback((tracks: AlbumTrack[], narratorPersona?: PersonaId) => {
-    scriptAbortRef.current?.abort()
-    secondaryListAbortRef.current?.abort()
-    moreStopsAbortRef.current?.abort()
-    moreStopsAbortRef.current = null
-    stopTour()
-    albumNarratorPersonaRef.current = narratorPersona ?? null
-    setScriptBusy(false)
-    setSecondariesRequestLoading(false)
-    setMoreStopsLoading(false)
-    setMoreStopsError(null)
-    setLastAppendedStopIds([])
-    revokeTrackUrls(albumTracksRef.current)
-    setAlbumTracks(tracks.map((t) => ({ ...t, hasStartedPlayback: false })))
-    setScriptText(tracks[0]?.scriptText ?? '')
-    setCurrentTrackIndex(0)
-    setAudioPhase('idle')
-    setAudioError(null)
-    setScriptError(null)
-    setAlbumError(null)
-  }, [stopTour])
+  const restoreAlbumFromTracks = useCallback(
+    (
+      tracks: AlbumTrack[],
+      narratorPersona?: PersonaId,
+      opts?: { tourListLabel?: string | null },
+    ) => {
+      scriptAbortRef.current?.abort()
+      secondaryListAbortRef.current?.abort()
+      moreStopsAbortRef.current?.abort()
+      moreStopsAbortRef.current = null
+      stopTour()
+      albumNarratorPersonaRef.current = narratorPersona ?? null
+      setScriptBusy(false)
+      setSecondariesRequestLoading(false)
+      setMoreStopsLoading(false)
+      setMoreStopsError(null)
+      setLastAppendedStopIds([])
+      revokeTrackUrls(albumTracksRef.current)
+      setAlbumTracks(tracks.map((t) => ({ ...t, hasStartedPlayback: false })))
+      setScriptText(tracks[0]?.scriptText ?? '')
+      setCurrentTrackIndex(0)
+      setAudioPhase('idle')
+      setAudioError(null)
+      setScriptError(null)
+      setAlbumError(null)
+      if (opts && 'tourListLabel' in opts) {
+        setTourListLabel(opts.tourListLabel?.trim() ? opts.tourListLabel.trim() : null)
+      } else {
+        setTourListLabel(null)
+      }
+    },
+    [stopTour],
+  )
 
   return {
     prefetchLoading: prefetchBlocking,
@@ -1194,5 +1240,6 @@ export function useTourEngine(selectedPlace: SelectedPlace | null, persona: Pers
     moreStopsLoading,
     moreStopsError,
     lastAppendedStopIds,
+    tourListLabel,
   }
 }

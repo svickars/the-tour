@@ -95,6 +95,7 @@ Return ONLY a JSON array (no markdown fences, no commentary). Each element must 
 - "wikipediaSearchQuery": optional string (only if no exact article title)
 - "includeWikipedia": optional boolean (default true)
 - "rating": optional number (0–5) if you are inferring popularity from provided data only
+- "hotspots": array of provenance objects (shape and limits described in the user message; may be empty)
 
 Rules:
 - Return exactly 2 or 3 entries (not more, not fewer).
@@ -131,6 +132,7 @@ Return ONLY a JSON array (no markdown fences, no commentary). Each element must 
 - "wikipediaSearchQuery": optional string (only if no exact article title — search query for Wikipedia)
 - "includeWikipedia": optional boolean (default true). Set false only when there is genuinely no sensible Wikipedia topic for this stop
 - "rating": optional number (0–5) if you are inferring popularity from provided data only
+- "hotspots": array of provenance objects (shape and limits described in the user message; may be empty)
 
 Rules:
 - Exactly 3 to 5 entries. Each must be a DISTINCT nearby place not identical to the main pin label.

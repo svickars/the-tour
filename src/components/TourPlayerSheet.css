@@ -507,11 +507,6 @@
   opacity: 0.4;
 }
 
-.tour-transcript-body--tab {
-  padding: 0.35rem 0 0.75rem;
-  overflow-y: auto;
-}
-
 .tour-transcript-text {
   margin: 0;
   font-size: 0.95rem;
@@ -523,19 +518,236 @@
 .tour-transcript-body--all {
   display: flex;
   flex-direction: column;
-  gap: 1.1rem;
+  gap: 1.25rem;
+  padding: 0.15rem 0.2rem 0.85rem;
 }
 
 .tour-transcript-block-title {
-  margin: 0 0 0.35rem;
-  font-size: 0.78rem;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin: 0 0 0.45rem;
+  padding: 0.4rem 0 0.55rem;
+  font-size: 1.08rem;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text-muted, #71717a);
+  letter-spacing: -0.035em;
+  line-height: 1.2;
+  color: var(--text-strong, #18181b);
+  background: var(--drawer-surface, #f3f2ef);
+  box-shadow: 0 1px 0 rgba(24, 24, 27, 0.07);
 }
 
 .tour-transcript-block .tour-transcript-text {
   margin-top: 0;
+}
+
+.tour-transcript-text--hotspots {
+  display: block;
+}
+
+.tour-transcript-hotspot-wrap {
+  white-space: normal;
+  display: inline;
+}
+
+.tour-transcript-hotspot-quoted {
+  white-space: pre-wrap;
+}
+
+.tour-transcript-hotspot-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  width: 1.55rem;
+  height: 1.55rem;
+  margin: 0 0.08rem 0 0.1rem;
+  padding: 0;
+  border: 1px solid var(--border, #e4e4e7);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text-strong, #18181b);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+  line-height: 1;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.tour-transcript-hotspot-btn:hover {
+  border-color: #d4d4d8;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.tour-transcript-hotspot-btn:focus-visible {
+  outline: 2px solid var(--focus, #18181b);
+  outline-offset: 2px;
+}
+
+/* Transcript tab: scroll + bottom fade + mini player */
+.tour-transcript-tab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tour-transcript-scroll-outer {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tour-transcript-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.tour-transcript-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.tour-transcript-scroll-fade {
+  pointer-events: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3.25rem;
+  background: linear-gradient(to bottom, rgba(243, 242, 239, 0), var(--drawer-surface, #f3f2ef));
+  transition: opacity 0.22s ease;
+}
+
+.tour-transcript-scroll-outer--at-bottom .tour-transcript-scroll-fade {
+  opacity: 0;
+}
+
+/* Hotspot detail — viewport-level sheet (portaled) */
+.tour-hotspot-sheet-root {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.tour-hotspot-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0);
+  cursor: default;
+  pointer-events: auto;
+  transition: background 0.32s ease;
+}
+
+.tour-hotspot-sheet-root--open .tour-hotspot-sheet-backdrop {
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.tour-hotspot-sheet-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: min(var(--page-sheet-max, min(calc(22.5rem + 2.5rem), 100%)), 100%);
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0 env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
+  pointer-events: none;
+}
+
+.tour-hotspot-sheet-panel {
+  pointer-events: auto;
+  width: 100%;
+  box-sizing: border-box;
+  max-height: min(78vh, 26rem);
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  border-radius: 20px 20px 0 0;
+  background: var(--surface-elevated, #fff);
+  color: var(--text, #27272a);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.2);
+  padding: 0.85rem 1.05rem 1rem;
+  transform: translateY(105%);
+  transition: transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.tour-hotspot-sheet-panel::-webkit-scrollbar {
+  display: none;
+}
+
+.tour-hotspot-sheet-root--open .tour-hotspot-sheet-panel {
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-hotspot-sheet-backdrop {
+    transition: background 0.12s ease;
+  }
+
+  .tour-hotspot-sheet-panel {
+    transition-duration: 0.01ms;
+  }
+}
+
+.tour-hotspot-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  margin-bottom: 0.45rem;
+}
+
+.tour-hotspot-sheet-kind {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  color: var(--text-strong, #18181b);
+}
+
+.tour-hotspot-sheet-close {
+  flex-shrink: 0;
+}
+
+.tour-hotspot-sheet-title {
+  margin: 0 0 0.55rem;
+  font-size: 1.12rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  color: var(--text-strong, #18181b);
+}
+
+.tour-hotspot-sheet-body {
+  margin: 0 0 0.65rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text, #3f3f46);
+}
+
+.tour-hotspot-sheet-link {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--accent, #6366f1);
 }
 
 .tour-player-panel--transcript {
@@ -830,6 +1042,7 @@
 /* Mini player (Stops tab) */
 .tour-mini-player {
   flex-shrink: 0;
+  flex-grow: 0;
   display: flex;
   align-items: center;
   gap: 0.55rem;
@@ -866,6 +1079,17 @@
   transform: scale(0.96);
 }
 
+.tour-player-now-playing {
+  margin: 0 0 0.45rem;
+  text-align: center;
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+  color: var(--text-strong, #18181b);
+  padding: 0 0.35rem;
+}
+
 .tour-mini-player-expand {
   flex: 1;
   min-width: 0;
@@ -873,6 +1097,7 @@
   flex-direction: column;
   align-items: stretch;
   justify-content: center;
+  gap: 0.35rem;
   min-height: 2.5rem;
   padding: 0.35rem 0.25rem;
   border: none;
@@ -890,6 +1115,19 @@
 
 .tour-mini-player-expand:active {
   background: rgba(0, 0, 0, 0.06);
+}
+
+.tour-mini-player-title {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--text-strong, #18181b);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .tour-mini-player-bar-wrap {

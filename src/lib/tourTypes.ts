@@ -1,3 +1,5 @@
+import type { TranscriptHotspot } from './transcriptHotspots'
+
 export type SelectedPlace = {
   label: string
   lat: number
@@ -24,6 +26,8 @@ export type AlbumTrack = {
   orderIndex: number
   status: AlbumTrackStatus
   scriptText: string
+  /** Provenance spans; indices are UTF-16 offsets into `scriptText` (cleaned narration). */
+  hotspots?: TranscriptHotspot[]
   /** Object URL for decoded MP3; revoke on cleanup */
   audioObjectUrl?: string
   mapsSearchQuery?: string

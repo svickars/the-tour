@@ -1,5 +1,6 @@
 import { PROMPT_VERSION } from './promptVersion'
 import type { AlbumTrack, SelectedPlace } from './tourTypes'
+import type { TranscriptHotspot } from './transcriptHotspots'
 import type { PersonaId } from './personas'
 import type { VibeId } from './vibes'
 import { VIBES } from './vibes'
@@ -25,6 +26,8 @@ export type SavedTourTrackRow = {
   lat?: number
   lng?: number
   rating?: number
+  /** Provenance spans; optional on legacy rows. */
+  hotspots?: TranscriptHotspot[]
 }
 
 export type SavedTourRecord = {
@@ -34,6 +37,11 @@ export type SavedTourRecord = {
   favourited: boolean
   /** Optional user-facing title for lists and share links; does not change `place` or fingerprinting. */
   savedLabel?: string
+  /**
+   * Model-suggested umbrella label for this tour (e.g. neighbourhood for a street address).
+   * Shown in lists when `savedLabel` is unset; superseded by user rename.
+   */
+  tourListLabel?: string
   promptVersion: string
   persona: PersonaId
   place: SelectedPlace
@@ -58,12 +66,16 @@ function parseStoredVibeIds(raw: unknown): VibeId[] | undefined {
 function normalizeRecord(raw: object): SavedTourRecord {
   const r = raw as SavedTourRecord & { starred?: boolean }
   const sl = typeof r.savedLabel === 'string' ? r.savedLabel.trim() : ''
+  const tl = typeof (r as { tourListLabel?: unknown }).tourListLabel === 'string'
+    ? (r as { tourListLabel: string }).tourListLabel.trim()
+    : ''
   return {
     id: r.id,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
     favourited: Boolean(r.favourited ?? r.starred ?? false),
     savedLabel: sl || undefined,
+    tourListLabel: tl || undefined,
     promptVersion: r.promptVersion,
     persona: r.persona,
     place: r.place,
@@ -118,6 +130,7 @@ async function buildTrackRows(tracks: AlbumTrack[]): Promise<SavedTourTrackRow[]
       lat: t.lat,
       lng: t.lng,
       rating: t.rating,
+      hotspots: t.hotspots,
     })
   }
   return rows
@@ -225,10 +238,13 @@ export async function updateSavedTourFavourite(id: string, favourited: boolean):
   await putSavedTour(row)
 }
 
-/** Label for share URLs and home lists — user rename when set, otherwise the place label. */
+/** Label for share URLs and home lists — user rename, else model tour title, else the place label. */
 export function shareLabelForSavedTour(row: SavedTourRecord): string {
   const custom = row.savedLabel?.trim()
-  return custom || row.place.label
+  if (custom) return custom
+  const tour = row.tourListLabel?.trim()
+  if (tour) return tour
+  return row.place.label
 }
 
 export async function updateSavedTourSavedLabel(id: string, savedLabel: string | undefined): Promise<void> {
@@ -311,12 +327,18 @@ export async function upsertTourFromAlbum(input: {
   persona: PersonaId
   tracks: AlbumTrack[]
   vibeIds?: VibeId[]
+  /** Model-suggested list/header title; omit to leave prior value when updating a saved row. */
+  tourListLabel?: string
 }): Promise<SavedTourRecord> {
   const existing = await findSavedTourByFingerprint(input.place, input.persona)
   const built = await buildTrackRows(input.tracks)
   const rows = mergePreservedTrackAudio(built, existing?.tracks)
   const now = Date.now()
   if (existing) {
+    const nextTourLabel =
+      input.tourListLabel !== undefined
+        ? input.tourListLabel.trim() || undefined
+        : existing.tourListLabel
     const next: SavedTourRecord = {
       ...existing,
       updatedAt: now,
@@ -324,6 +346,7 @@ export async function upsertTourFromAlbum(input: {
       place: input.place,
       tracks: rows,
       vibeIds: input.vibeIds ?? existing.vibeIds,
+      tourListLabel: nextTourLabel,
     }
     await putSavedTour(next)
     return next
@@ -342,6 +365,7 @@ export async function upsertTourFromAlbum(input: {
     place: input.place,
     tracks: rows,
     vibeIds: input.vibeIds,
+    tourListLabel: input.tourListLabel?.trim() || undefined,
   }
   await putSavedTour(record)
   return record
@@ -374,6 +398,7 @@ export function albumTracksFromSaved(record: SavedTourRecord): AlbumTrack[] {
       lng: row.lng,
       rating: row.rating,
       hasStartedPlayback: false,
+      hotspots: row.hotspots,
     }
   })
 }

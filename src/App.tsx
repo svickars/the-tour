@@ -256,6 +256,7 @@ export default function App() {
   const [renameModal, setRenameModal] = useState<{ id: string; draft: string } | null>(null)
   const [clearHistoryOpen, setClearHistoryOpen] = useState(false)
   const [clearHistoryFavouritesToo, setClearHistoryFavouritesToo] = useState(false)
+  const [tourHotspotOverlay, setTourHotspotOverlay] = useState(false)
   const renameInputRef = useRef<HTMLInputElement>(null)
   const renameTitleId = useId()
   const clearHistoryTitleId = useId()
@@ -313,6 +314,7 @@ export default function App() {
     moreStopsLoading,
     moreStopsError,
     lastAppendedStopIds,
+    tourListLabel,
   } = useTourEngine(selectedPlace, persona)
 
   const flushAutosaveTour = useCallback(async () => {
@@ -323,12 +325,13 @@ export default function App() {
         persona,
         tracks: albumTracks,
         vibeIds: tourVibeChipUnion,
+        ...(tourListLabel ? { tourListLabel } : {}),
       })
       await refreshSaved()
     } catch {
       /* ignore persist errors */
     }
-  }, [selectedPlace, persona, albumTracks, tourVibeChipUnion, refreshSaved])
+  }, [selectedPlace, persona, albumTracks, tourVibeChipUnion, tourListLabel, refreshSaved])
 
   const bridgeTourContentReady = useMemo(() => {
     const main = albumTracks[0]
@@ -506,6 +509,7 @@ export default function App() {
         persona,
         tracks: albumTracks,
         vibeIds: tourVibeChipUnion,
+        ...(tourListLabel ? { tourListLabel } : {}),
       })
       const row = await findSavedTourByFingerprint(selectedPlace, persona)
       if (row) await updateSavedTourFavourite(row.id, nextFav)
@@ -513,7 +517,7 @@ export default function App() {
     } catch {
       /* ignore */
     }
-  }, [selectedPlace, persona, albumTracks, tourVibeChipUnion, refreshSaved])
+  }, [selectedPlace, persona, albumTracks, tourVibeChipUnion, tourListLabel, refreshSaved])
 
   const isTourFavourited = useMemo(() => {
     if (!selectedPlace) return false
@@ -532,9 +536,10 @@ export default function App() {
     if (!selectedPlace) return undefined
     const fp = placeFingerprint(selectedPlace, persona)
     const hit = savedList.find((r) => placeFingerprint(r.place, r.persona) === fp)
-    if (!hit) return undefined
-    return shareLabelForSavedTour(hit)
-  }, [selectedPlace, persona, savedList])
+    if (hit) return shareLabelForSavedTour(hit)
+    if (tourListLabel?.trim()) return tourListLabel.trim()
+    return undefined
+  }, [selectedPlace, persona, savedList, tourListLabel])
 
   const openClearHistoryModal = useCallback(() => {
     if (!savedList.some((r) => !r.favourited)) return
@@ -744,7 +749,9 @@ export default function App() {
                             setTourVibeChipUnion(row.vibeIds ?? [])
                             setSelectedPlace(row.place)
                             setPersona(row.persona)
-                            restoreAlbumFromTracks(albumTracksFromSaved(row), row.persona)
+                            restoreAlbumFromTracks(albumTracksFromSaved(row), row.persona, {
+                              tourListLabel: row.tourListLabel,
+                            })
                             enterTourFromLibrary()
                           }
                           return (
@@ -987,7 +994,9 @@ export default function App() {
                             setTourVibeChipUnion(row.vibeIds ?? [])
                             setSelectedPlace(row.place)
                             setPersona(row.persona)
-                            restoreAlbumFromTracks(albumTracksFromSaved(row), row.persona)
+                            restoreAlbumFromTracks(albumTracksFromSaved(row), row.persona, {
+                              tourListLabel: row.tourListLabel,
+                            })
                             enterTourFromLibrary()
                           }
                           return (
@@ -1354,49 +1363,52 @@ export default function App() {
 
         {step === 'tour' && selectedPlace && (
           <div
-            className="card-layer card-layer-front card-front-animate tour-player-drawer"
+            className={`tour-player-drawer-anchor${tourHotspotOverlay ? ' tour-player-drawer-anchor--dimmed' : ''}`}
             role="dialog"
             aria-modal="true"
             aria-label="Tour player"
           >
-            <TourPlayerSheet
-              selectedPlace={selectedPlace}
-              placeHeadingLabel={tourSheetHeadingLabel}
-              persona={persona}
-              narratorLabel={PERSONAS.find((p) => p.id === persona)?.label ?? ''}
-              scriptText={scriptText}
-              scriptError={scriptError}
-              audioError={audioError}
-              audioPhase={audioPhase}
-              currentTime={currentTime}
-              duration={duration}
-              audioPaused={audioPaused}
-              albumTracks={albumTracks}
-              albumError={albumError}
-              secondariesRequestLoading={secondariesRequestLoading}
-              currentTrackIndex={currentTrackIndex}
-              onDismissTour={handleDismissTour}
-              onNarratorChange={handleSwitchNarratorFromTour}
-              togglePlayPause={togglePlayPause}
-              seekBy={seekBy}
-              seekTo={seekTo}
-              goToTrack={goToTrack}
-              nextTrack={nextTrack}
-              prevTrack={prevTrack}
-              onShare={handleShareTour}
-              isFavourited={isTourFavourited}
-              onFavouriteToggle={() => void handleFavouriteToggleFromSheet()}
-              hasSavedRecord={hasSavedRecordForTour}
-              onDeleteSavedTour={handleDeleteCurrentSavedTour}
-              onRetryAudio={() => void retryCurrentTrackNarration()}
-              vibeSelection={vibeSelection}
-              onToggleVibe={(id) => setVibeSelection((prev) => toggleVibeSelection(prev, id))}
-              onFindMoreStops={() => void handleFindMoreStops()}
-              moreStopsLoading={moreStopsLoading}
-              moreStopsError={moreStopsError}
-              lastAppendedStopIds={lastAppendedStopIds}
-              vibeIds={tourVibeChipUnion}
-            />
+            <div className="tour-player-drawer-chrome tour-player-drawer-chrome--animate">
+              <TourPlayerSheet
+                selectedPlace={selectedPlace}
+                placeHeadingLabel={tourSheetHeadingLabel}
+                persona={persona}
+                narratorLabel={PERSONAS.find((p) => p.id === persona)?.label ?? ''}
+                scriptText={scriptText}
+                scriptError={scriptError}
+                audioError={audioError}
+                audioPhase={audioPhase}
+                currentTime={currentTime}
+                duration={duration}
+                audioPaused={audioPaused}
+                albumTracks={albumTracks}
+                albumError={albumError}
+                secondariesRequestLoading={secondariesRequestLoading}
+                currentTrackIndex={currentTrackIndex}
+                onDismissTour={handleDismissTour}
+                onNarratorChange={handleSwitchNarratorFromTour}
+                togglePlayPause={togglePlayPause}
+                seekBy={seekBy}
+                seekTo={seekTo}
+                goToTrack={goToTrack}
+                nextTrack={nextTrack}
+                prevTrack={prevTrack}
+                onShare={handleShareTour}
+                isFavourited={isTourFavourited}
+                onFavouriteToggle={() => void handleFavouriteToggleFromSheet()}
+                hasSavedRecord={hasSavedRecordForTour}
+                onDeleteSavedTour={handleDeleteCurrentSavedTour}
+                onRetryAudio={() => void retryCurrentTrackNarration()}
+                vibeSelection={vibeSelection}
+                onToggleVibe={(id) => setVibeSelection((prev) => toggleVibeSelection(prev, id))}
+                onFindMoreStops={() => void handleFindMoreStops()}
+                moreStopsLoading={moreStopsLoading}
+                moreStopsError={moreStopsError}
+                lastAppendedStopIds={lastAppendedStopIds}
+                vibeIds={tourVibeChipUnion}
+                onHotspotOverlayOpenChange={setTourHotspotOverlay}
+              />
+            </div>
           </div>
         )}
       </main>

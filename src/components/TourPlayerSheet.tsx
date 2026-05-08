@@ -16,6 +16,7 @@ import {
 	X,
 } from 'lucide-react';
 import { PersonaAvatar } from './PersonaAvatar';
+import { TranscriptWithHotspots } from './TranscriptWithHotspots';
 import type { AlbumTrack, SelectedPlace } from '../lib/tourTypes';
 import { googleMapsSearchUrl } from '../lib/externalLinks';
 import { formatAudioTime, splitPlaceLabel } from '../lib/placeHeading';
@@ -27,6 +28,62 @@ import { VibeEmojiOverlap } from './VibeEmojiOverlap';
 import './TourPlayerSheet.css';
 
 type TabId = 'player' | 'stops' | 'transcript';
+
+function TourMiniPlayer({
+	showPlayingUi,
+	audioPaused,
+	audioPhase,
+	scrubMax,
+	currentTime,
+	nowPlayingTitle,
+	togglePlayPause,
+	setTab,
+}: {
+	showPlayingUi: boolean;
+	audioPaused: boolean;
+	audioPhase: 'idle' | 'loading' | 'playing';
+	scrubMax: number;
+	currentTime: number;
+	nowPlayingTitle: string;
+	togglePlayPause: () => void;
+	setTab: (t: TabId) => void;
+}) {
+	if (!showPlayingUi) return null;
+	const title = nowPlayingTitle.trim();
+	return (
+		<div className="tour-mini-player">
+			<button
+				type="button"
+				className="tour-mini-player-playbtn"
+				onClick={(e) => {
+					e.stopPropagation();
+					togglePlayPause();
+				}}
+				aria-label={audioPaused || audioPhase === 'idle' ? 'Play' : 'Pause'}>
+				{audioPaused || audioPhase === 'idle' ? (
+					<Play size={22} fill="currentColor" aria-hidden />
+				) : (
+					<Pause size={22} fill="currentColor" aria-hidden />
+				)}
+			</button>
+			<button
+				type="button"
+				className="tour-mini-player-expand"
+				onClick={() => setTab('player')}
+				aria-label="Open player">
+				{title ? <span className="tour-mini-player-title">{title}</span> : null}
+				<span className="tour-mini-player-bar-wrap">
+					<span
+						className="tour-mini-player-bar"
+						style={{
+							width: `${scrubMax > 0 ? Math.min(100, (currentTime / scrubMax) * 100) : 0}%`,
+						}}
+					/>
+				</span>
+			</button>
+		</div>
+	);
+}
 
 function mapsHrefForTrack(track: AlbumTrack, placeSubtitle: string | undefined): string {
 	if (track.googleMapsUrl?.trim()) return track.googleMapsUrl.trim();
@@ -88,8 +145,8 @@ export type TourPlayerSheetProps = {
 	moreStopsLoading: boolean;
 	moreStopsError: string | null;
 	lastAppendedStopIds: readonly string[];
-	/** Union of vibes used for this tour (header chips + persisted `vibeIds`). */
-	vibeIds: readonly VibeId[];
+	/** When a transcript hotspot detail sheet opens or closes — dims/scales the outer tour drawer. */
+	onHotspotOverlayOpenChange?: (open: boolean) => void;
 };
 
 export function TourPlayerSheet({
@@ -129,6 +186,7 @@ export function TourPlayerSheet({
 	moreStopsError,
 	lastAppendedStopIds,
 	vibeIds,
+	onHotspotOverlayOpenChange,
 }: TourPlayerSheetProps) {
 	const [tab, setTab] = useState<TabId>('player');
 	const [tourMenuOpen, setTourMenuOpen] = useState(false);
@@ -137,6 +195,26 @@ export function TourPlayerSheet({
 	const tourMenuRef = useRef<HTMLDivElement | null>(null);
 	const narratorMenuRef = useRef<HTMLDivElement | null>(null);
 	const placeTitleRef = useRef<HTMLHeadingElement>(null);
+	const transcriptScrollRef = useRef<HTMLDivElement>(null);
+	const stopsScrollRef = useRef<HTMLDivElement>(null);
+	const [transcriptAtBottom, setTranscriptAtBottom] = useState(false);
+
+	const onTranscriptScroll = useCallback(() => {
+		const el = transcriptScrollRef.current;
+		if (!el) return;
+		setTranscriptAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight <= 8);
+	}, []);
+
+	const selectTab = useCallback(
+		(next: TabId) => {
+			if (next !== 'transcript') {
+				onHotspotOverlayOpenChange?.(false);
+				setTranscriptAtBottom(false);
+			}
+			setTab(next);
+		},
+		[onHotspotOverlayOpenChange],
+	);
 
 	const labelForHeading = (placeHeadingLabel?.trim() || selectedPlace.label).trim();
 
@@ -150,6 +228,38 @@ export function TourPlayerSheet({
 	useLayoutEffect(() => {
 		placeTitleRef.current?.focus({ preventScroll: true });
 	}, [selectedPlace.lat, selectedPlace.lng, labelForHeading]);
+
+	useLayoutEffect(() => {
+		if (tab !== 'transcript') return;
+		const track = albumTracks[currentTrackIndex];
+		if (!track) return;
+		const root = transcriptScrollRef.current;
+		if (!root) return;
+		const el = document.getElementById(`tour-transcript-stop-${track.id}`);
+		if (!el || !root.contains(el)) return;
+		const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
+		el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+	}, [tab, currentTrackIndex, albumTracks]);
+
+	useLayoutEffect(() => {
+		if (tab !== 'stops') return;
+		const track = albumTracks[currentTrackIndex];
+		if (!track) return;
+		const root = stopsScrollRef.current;
+		if (!root) return;
+		const el = document.getElementById(`tour-stop-row-${track.id}`);
+		if (!el || !root.contains(el)) return;
+		const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
+		el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'nearest' });
+	}, [tab, currentTrackIndex, albumTracks]);
+
+	useLayoutEffect(() => {
+		if (tab !== 'transcript') return;
+		const id = requestAnimationFrame(() => {
+			onTranscriptScroll();
+		});
+		return () => cancelAnimationFrame(id);
+	}, [tab, albumTracks, scriptText, onTranscriptScroll]);
 
 	useEffect(() => {
 		if (!tourMenuOpen) return;
@@ -171,6 +281,12 @@ export function TourPlayerSheet({
 		return () => window.removeEventListener('pointerdown', onDown);
 	}, [narratorMenuOpen]);
 
+	useEffect(() => {
+		return () => {
+			onHotspotOverlayOpenChange?.(false);
+		};
+	}, [onHotspotOverlayOpenChange]);
+
 	const durationLabel = duration > 0 && Number.isFinite(duration) ? formatAudioTime(duration) : '—';
 	const scrubMax = duration > 0 && Number.isFinite(duration) ? duration : 0;
 	const canScrub = audioPhase === 'playing' && scrubMax > 0;
@@ -180,6 +296,7 @@ export function TourPlayerSheet({
 	const canNextTrack = currentTrackIndex < albumTracks.length - 1;
 
 	const currentTrack = albumTracks[currentTrackIndex];
+	const nowPlayingTitle = currentTrack?.title?.trim() || 'This stop';
 	const canPlayCurrent = Boolean(currentTrack?.audioObjectUrl) && currentTrack?.status === 'ready';
 	const audioNeedsRetry =
 		Boolean(onRetryAudio) &&
@@ -351,7 +468,7 @@ export function TourPlayerSheet({
 					role="tab"
 					aria-selected={tab === 'player'}
 					className={`tour-player-tab${tab === 'player' ? ' tour-player-tab--active' : ''}`}
-					onClick={() => setTab('player')}>
+					onClick={() => selectTab('player')}>
 					Player
 				</button>
 				<button
@@ -359,7 +476,7 @@ export function TourPlayerSheet({
 					role="tab"
 					aria-selected={tab === 'stops'}
 					className={`tour-player-tab${tab === 'stops' ? ' tour-player-tab--active' : ''}`}
-					onClick={() => setTab('stops')}>
+					onClick={() => selectTab('stops')}>
 					Stops
 				</button>
 				<button
@@ -367,7 +484,7 @@ export function TourPlayerSheet({
 					role="tab"
 					aria-selected={tab === 'transcript'}
 					className={`tour-player-tab${tab === 'transcript' ? ' tour-player-tab--active' : ''}`}
-					onClick={() => setTab('transcript')}>
+					onClick={() => selectTab('transcript')}>
 					Transcript
 				</button>
 			</nav>
@@ -394,6 +511,12 @@ export function TourPlayerSheet({
 									</button>
 								) : null}
 							</div>
+						) : null}
+
+						{showPlayingUi && albumTracks.length > 0 ? (
+							<p className="tour-player-now-playing" role="status">
+								{nowPlayingTitle}
+							</p>
 						) : null}
 
 						<div className="tour-player-transport tour-player-transport--wide">
@@ -474,21 +597,54 @@ export function TourPlayerSheet({
 						key="panel-transcript"
 						className="tour-player-panel tour-player-panel--transcript tour-player-panel-animate"
 						role="tabpanel">
-						<div className="tour-transcript-body tour-transcript-body--tab tour-transcript-body--all">
-							{albumTracks.some((tr) => tr.scriptText.trim()) ? (
-								albumTracks.map((tr) =>
-									tr.scriptText.trim() ? (
-										<section key={tr.id} className="tour-transcript-block">
-											<h3 className="tour-transcript-block-title">{tr.title}</h3>
-											<p className="tour-transcript-text">{tr.scriptText.trim()}</p>
-										</section>
-									) : null,
-								)
-							) : scriptText.trim() ? (
-								<p className="tour-transcript-text">{scriptText.trim()}</p>
-							) : (
-								<p className="field-hint">No transcript yet.</p>
-							)}
+						<div className="tour-transcript-tab">
+							<div
+								className={`tour-transcript-scroll-outer${transcriptAtBottom ? ' tour-transcript-scroll-outer--at-bottom' : ''}`}>
+								<div
+									ref={transcriptScrollRef}
+									className="tour-transcript-scroll"
+									onScroll={onTranscriptScroll}>
+									<div className="tour-transcript-body tour-transcript-body--all">
+										{albumTracks.some((tr) => tr.scriptText.trim()) ? (
+											albumTracks.map((tr) =>
+												tr.scriptText.trim() ? (
+													<section key={tr.id} id={`tour-transcript-stop-${tr.id}`} className="tour-transcript-block">
+														<h3 className="tour-transcript-block-title">{tr.title}</h3>
+														<TranscriptWithHotspots
+															text={tr.scriptText.trim()}
+															hotspots={tr.hotspots}
+															onHotspotSheetPresenceChange={onHotspotOverlayOpenChange}
+														/>
+													</section>
+												) : null,
+											)
+										) : scriptText.trim() ? (
+											<section
+												id={`tour-transcript-stop-${albumTracks[0]?.id ?? 'main'}`}
+												className="tour-transcript-block">
+												<TranscriptWithHotspots
+													text={scriptText.trim()}
+													hotspots={albumTracks[0]?.hotspots}
+													onHotspotSheetPresenceChange={onHotspotOverlayOpenChange}
+												/>
+											</section>
+										) : (
+											<p className="field-hint">No transcript yet.</p>
+										)}
+									</div>
+								</div>
+								<div className="tour-transcript-scroll-fade" aria-hidden />
+							</div>
+							<TourMiniPlayer
+								showPlayingUi={showPlayingUi}
+								audioPaused={audioPaused}
+								audioPhase={audioPhase}
+								scrubMax={scrubMax}
+								currentTime={currentTime}
+								nowPlayingTitle={nowPlayingTitle}
+								togglePlayPause={togglePlayPause}
+								setTab={selectTab}
+							/>
 						</div>
 					</div>
 				)}
@@ -498,7 +654,7 @@ export function TourPlayerSheet({
 						key="panel-stops"
 						className="tour-player-panel tour-player-panel--stops tour-player-panel-animate"
 						role="tabpanel">
-						<div className="tour-stops-scroll">
+						<div ref={stopsScrollRef} className="tour-stops-scroll">
 							{secondariesRequestLoading && albumTracks.length <= 1 ? (
 								<>
 									<p className="tour-stops-status">Planning walking tour…</p>
@@ -528,6 +684,7 @@ export function TourPlayerSheet({
 											return (
 												<li
 													key={track.id}
+													id={`tour-stop-row-${track.id}`}
 													className={`tour-stop-row${fadeInStopIds.has(track.id) ? ' tour-stop-row--appear' : ''}`}>
 													<button
 														type="button"
@@ -651,38 +808,16 @@ export function TourPlayerSheet({
 							)}
 						</div>
 
-						{showPlayingUi && (
-							<div className="tour-mini-player">
-								<button
-									type="button"
-									className="tour-mini-player-playbtn"
-									onClick={(e) => {
-										e.stopPropagation();
-										togglePlayPause();
-									}}
-									aria-label={audioPaused || audioPhase === 'idle' ? 'Play' : 'Pause'}>
-									{audioPaused || audioPhase === 'idle' ? (
-										<Play size={22} fill="currentColor" aria-hidden />
-									) : (
-										<Pause size={22} fill="currentColor" aria-hidden />
-									)}
-								</button>
-								<button
-									type="button"
-									className="tour-mini-player-expand"
-									onClick={() => setTab('player')}
-									aria-label="Open player">
-									<span className="tour-mini-player-bar-wrap">
-										<span
-											className="tour-mini-player-bar"
-											style={{
-												width: `${scrubMax > 0 ? Math.min(100, (currentTime / scrubMax) * 100) : 0}%`,
-											}}
-										/>
-									</span>
-								</button>
-							</div>
-						)}
+						<TourMiniPlayer
+							showPlayingUi={showPlayingUi}
+							audioPaused={audioPaused}
+							audioPhase={audioPhase}
+							scrubMax={scrubMax}
+							currentTime={currentTime}
+							nowPlayingTitle={nowPlayingTitle}
+							togglePlayPause={togglePlayPause}
+							setTab={selectTab}
+						/>
 					</div>
 				)}
 			</div>

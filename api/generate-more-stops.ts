@@ -1,5 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { cleanScript } from './lib/cleanScript.js'
+import { normalizeHotspotsForCleanedScript, type TranscriptHotspot } from './lib/transcriptHotspots.js'
 import { parseVibeThemes, vibeThemesInstructionBlock } from './parseVibeThemes.js'
+import { TRACK_HOTSPOTS_USER_CLAUSE } from './secondaryTrackHotspotInstruction.js'
 import { buildMoreStopsSystemBlocks, type PersonaId } from './tourAuthoringPrompts.js'
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages' as const
@@ -143,6 +146,7 @@ export type MoreStopPayload = {
   googleMapsUrl?: string
   wikipediaUrl?: string
   rating?: number
+  hotspots?: TranscriptHotspot[]
 }
 
 function titleKey(s: string): string {
@@ -156,8 +160,11 @@ function normalizeMoreTracks(raw: unknown, max: number): MoreStopPayload[] {
   for (const row of raw) {
     if (!isRecord(row)) continue
     const title = typeof row.title === 'string' ? row.title.trim() : ''
-    const script = typeof row.script === 'string' ? row.script.trim() : ''
-    if (!title || !script) continue
+    const scriptRaw = typeof row.script === 'string' ? row.script.trim() : ''
+    if (!title || !scriptRaw) continue
+    const script = cleanScript(scriptRaw)
+    if (!script) continue
+    const hotspots = normalizeHotspotsForCleanedScript(script, row.hotspots)
     const description =
       typeof row.description === 'string' && row.description.trim()
         ? row.description.trim().slice(0, 220)
@@ -202,6 +209,7 @@ function normalizeMoreTracks(raw: unknown, max: number): MoreStopPayload[] {
       googleMapsUrl,
       wikipediaUrl,
       rating,
+      hotspots: hotspots.length > 0 ? hotspots : undefined,
     })
     i++
     if (out.length >= max) break
@@ -295,6 +303,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     '',
     'Main tour script (for continuity — do not repeat verbatim):',
     mainScript.slice(0, 3500),
+    '',
+    TRACK_HOTSPOTS_USER_CLAUSE,
   ]
 
   const userContent = userLines.filter(Boolean).join('\n')
