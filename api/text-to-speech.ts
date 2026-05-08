@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { cleanScript } from './lib/cleanScript.js'
 
 const ELEVEN_BASE = 'https://api.elevenlabs.io/v1/text-to-speech' as const
 const MODEL_ID = 'eleven_multilingual_v2' as const
@@ -82,61 +83,6 @@ function resolveVoiceId(persona: PersonaId): string | null {
   const fallback = process.env.ELEVENLABS_VOICE_ID?.trim()
   const voiceId = fromMap || fallback || voiceMap.deadpan
   return voiceId || null
-}
-
-/**
- * Prepares tour script text for TTS (same behavior as `src/lib/cleanScript.ts`).
- * Inlined here so the serverless bundle does not rely on a separate `api/lib/*` file on Vercel.
- */
-function cleanScript(text: string): string {
-  const normalized = text.replace(/\r\n/g, '\n')
-  const lines = normalized.split('\n')
-  const kept: string[] = []
-
-  for (const rawLine of lines) {
-    const trimmed = rawLine.trim()
-    if (!trimmed) continue
-
-    if (trimmed.startsWith('#')) continue
-
-    if (isAllCapsSectionTitle(trimmed)) continue
-
-    kept.push(cleanLine(rawLine))
-  }
-
-  return kept
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function isAllCapsSectionTitle(line: string): boolean {
-  const t = line.trim()
-  if (t.length < 8) return false
-
-  const letters = t.replace(/[^A-Za-z]/g, '')
-  if (letters.length < 5) return false
-
-  return letters === letters.toUpperCase()
-}
-
-function cleanLine(line: string): string {
-  let s = line
-
-  while (/\[[^\]]*\]/.test(s)) {
-    s = s.replace(/\[[^\]]*\]/g, ' ')
-  }
-
-  while (/\([^)]*\)/.test(s)) {
-    s = s.replace(/\([^)]*\)/g, ' ')
-  }
-
-  s = s.replace(/\*+/g, '')
-  s = s.replace(/\s+/g, ' ').trim()
-
-  return s
 }
 
 export default async function handler(

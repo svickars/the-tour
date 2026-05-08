@@ -1,8 +1,9 @@
 /**
- * Prepares tour script text for TTS: removes markdown headers, bracket/paren
- * asides, asterisks, all-caps “section title” lines, and extra whitespace.
+ * Server copy of script cleaning for TTS (`api/text-to-speech`).
+ * Vercel bundles each API route separately; this file must live under `api/`
+ * so `import './lib/cleanScript.js'` resolves in `/var/task/api/`.
  *
- * Keep in sync with `api/lib/cleanScript.ts` (Vercel serverless TTS bundle).
+ * Keep in sync with `src/lib/cleanScript.ts` (client / hooks).
  */
 export function cleanScript(text: string): string {
   const normalized = text.replace(/\r\n/g, '\n')
@@ -28,7 +29,6 @@ export function cleanScript(text: string): string {
     .trim()
 }
 
-/** Lines that look like ALL-CAPS section headings (not short shouts). */
 function isAllCapsSectionTitle(line: string): boolean {
   const t = line.trim()
   if (t.length < 8) return false
